@@ -3,6 +3,7 @@ from typing import Optional, Annotated, Any
 from collections import defaultdict
 from pydantic import TypeAdapter
 from typing import Generator
+from .log import *
 
 _cursos: dict[str, 'Curso'] = {}
 class Curso(BaseModel):
@@ -66,7 +67,8 @@ class Curso(BaseModel):
 
     def save(self):
         if self.cod in _cursos:
-            raise ValueError(f'Curso {self.cod} already registered')
+            warning(f'Curso {self.cod} already registered')
+            return
         _cursos[self.cod] = self
 
     def disciplinas(self) -> Generator['DisciplinaCell', None, None]:
@@ -80,6 +82,12 @@ class Curso(BaseModel):
         return _cursos.get(cod)
 
     @classmethod
+    def _get(cls, cod: str) -> 'Curso':
+        if isinstance(cod, Curso):
+            cod = cod.cod
+        return _cursos[cod]
+
+    @classmethod
     def load(cls, data: list[Any]):
         for curso in data:
             c = Curso.model_validate(curso)
@@ -88,30 +96,24 @@ class Curso(BaseModel):
 class _CursoCell(BaseModel):
     curso: str | Curso
 
-    @classmethod
-    def get(cls, cod: 'str | Curso') -> 'CursoCell':
-        if isinstance(cod, Curso):
-            cod = cod.cod
-        return cls(curso=_cursos[cod])
-
 CursoCell = Annotated[
     _CursoCell,
-    PlainSerializer(lambda x: x.curso.cod if isinstance(x.disc, Curso) else x.curso, str),
-    BeforeValidator(_CursoCell.get)
+    PlainSerializer(lambda x: x.curso.cod if isinstance(x.curso, Curso) else x.curso, str)
 ]
 
-_professores: dict[str, '_Professor'] = {}
-class _Professor(BaseModel):
+_professores: dict[str, 'Professor'] = {}
+class Professor(BaseModel):
     nome: str
     """Nome do professor"""
 
     @classmethod
-    def get(cls, nome: str) -> Optional['_Professor']:
+    def get(cls, nome: str) -> Optional['Professor']:
         return _professores.get(nome)
 
     def save(self):
         if self.nome in _professores:
-            raise ValueError(f'Professor {self.nome} already registered')
+            warning(f'Professor {self.nome} already registered')
+            return
         _professores[self.nome] = self
 
     @classmethod
@@ -120,14 +122,24 @@ class _Professor(BaseModel):
             p = cls.model_validate(professor)
             _professores[p.nome] = p
 
-Professor = Annotated[
-    _Professor,
-    PlainSerializer(lambda x: x.nome, str),
-    BeforeValidator(_Professor.get)
+class _ProfessorCell(BaseModel):
+    prof: str | Professor
+
+    @classmethod
+    def get(cls, prof: 'str | Professor | ProfessorCell') -> 'ProfessorCell':
+        if isinstance(prof, (Professor, str)):
+            return cls(prof=prof)
+        if isinstance(prof, _ProfessorCell):
+            return prof
+
+ProfessorCell = Annotated[
+    _ProfessorCell,
+    PlainSerializer(lambda x: x.prof.nome if isinstance(x.prof, Professor) else x.prof, str),
+    BeforeValidator(_ProfessorCell.get)
 ]
 
-_locais: dict[str, '_Local'] = {}
-class _Local(BaseModel):
+_locais: dict[str, 'Local'] = {}
+class Local(BaseModel):
     abbr: str
     """Abreviação do local"""
     local: str
@@ -136,14 +148,15 @@ class _Local(BaseModel):
     """Capacidade do local"""
 
     @classmethod
-    def get(cls, abbr: 'str | _Local') -> Optional['_Local']:
-        if isinstance(abbr, _Local):
+    def get(cls, abbr: 'str | Local') -> Optional['Local']:
+        if isinstance(abbr, Local):
             abbr = abbr.abbr
         return _locais.get(abbr)
 
     def save(self):
         if self.abbr in _locais:
-            raise ValueError(f'Local {self.abbr} already registered')
+            warning(f'Local {self.abbr} already registered')
+            return
         _locais[self.abbr] = self
 
     @classmethod
@@ -152,10 +165,21 @@ class _Local(BaseModel):
             l = cls.model_validate(local)
             _locais[l.abbr] = l
 
-Local = Annotated[
-    _Local,
-    PlainSerializer(lambda x: x.abbr, str),
-    BeforeValidator(_Local.get)
+class _LocalCell(BaseModel):
+    local: str | Local
+
+    @classmethod
+    def get(cls, abbr: 'str | LocalCell') -> 'LocalCell':
+        if isinstance(abbr, LocalCell):
+            return abbr
+        if abbr in _locais:
+            return cls(local=_locais[abbr])
+        return cls(local=abbr)
+
+LocalCell = Annotated[
+    _LocalCell,
+    PlainSerializer(lambda x: x.local.abbr if isinstance(x.local, Local) else x, str),
+    BeforeValidator(_LocalCell.get)
 ]
 
 _disciplinas: dict[str, 'Disciplina'] = {}
@@ -188,11 +212,13 @@ class Disciplina(BaseModel):
             """Local da aula"""
 
         situacao: str
-        curso: Curso
+        turma: str
+        curso: CursoCell
+        professor: ProfessorCell
         """Curso da oferta"""
-        normal: Vagas
+        normal: Optional[Vagas] = None
         """Vagas normais"""
-        especial: Vagas
+        especial: Optional[Vagas] = None
         """Vagas especiais"""
         horarios: list[HorarioLocal] = Field(default_factory=list)
         """Horários e locais da oferta"""
@@ -222,7 +248,8 @@ class Disciplina(BaseModel):
 
     def save(self):
         if self.cod in _disciplinas:
-            raise ValueError(f'Disciplina {self.cod} already registered')
+            warning(f'Disciplina {self.cod} already registered')
+            return
         _disciplinas[self.cod] = self
 
     @classmethod

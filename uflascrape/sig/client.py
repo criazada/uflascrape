@@ -2,7 +2,7 @@ from pydantic import BaseModel
 from typing import Optional, Mapping, Any
 from httpx import Client, Response
 from ..model import Curso, Disciplina
-from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub
+from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub, parse_oferta_pub, list_ofertas
 from ..log import *
 
 SIG_BASE_URL = 'https://sig.ufla.br'
@@ -146,3 +146,40 @@ class Sig:
             )
             matrizes.append(matriz)
         return matrizes
+
+    def get_ofertas(self, disc: Disciplina) -> list[Disciplina.Oferta]:
+        info(f'Getting ofertas for {disc=}')
+        r = self._sig_request(
+            'POST', 'consultar_horario_pub',
+            data={
+                'codigo_disciplina': disc.cod,
+                'cod_periodo_letivo': 231, # TODO
+                'enviar': 'Consultar'
+            },
+            params={'xml': 1}
+        )
+        root = parse_html(r.text)
+        ofertas = []
+        cod_ofertas = list_ofertas(root)
+        for cod_oferta in cod_ofertas:
+            info(f'Getting oferta {cod_oferta=}')
+            r = self._sig_request(
+                'GET', 'consultar_horario_pub',
+                params={
+                    'cod_oferta_disciplina': cod_oferta,
+                    'cod_periodo_letivo': 231, # TODO
+                    'op': 'abrir'
+                },
+            )
+            root = parse_html(r.text)
+            oferta = parse_oferta_pub(root)
+            self._sig_request(
+                'GET', 'consultar_horario_pub',
+                params={
+                    'cod_oferta_disciplina': cod_oferta,
+                    'cod_periodo_letivo': 231, # TODO
+                    'op': 'fechar'
+                },
+            )
+            ofertas.append(oferta)
+        return ofertas

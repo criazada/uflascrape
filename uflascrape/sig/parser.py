@@ -2,7 +2,7 @@ import html
 import html.parser
 from pydantic import BaseModel, Field
 from typing import Optional, Generator, Callable
-from ..model import Curso, Disciplina, DisciplinaCell
+from ..model import Curso, CursoCell, Disciplina, DisciplinaCell, Local, LocalCell, Professor, ProfessorCell
 import re
 from ..log import *
 
@@ -91,6 +91,30 @@ def parse_html(html: str) -> Tag:
     parser.feed(html)
     return parser._root
 
+def sig_fields(dados: Tag) -> dict[str, str]:
+    ps = dados.find_by_name('p')
+    fields = {}
+    for p in ps:
+        if not p.text: continue
+        strong = p.find_by_name('strong')
+        if not strong: continue
+        if not strong[0].text: continue
+        key = strong[0].text.strip(':').lower()
+        val = p.text.strip()
+        fields[key] = val
+    return fields
+
+def extract_links_re(root: Tag, rg: re.Pattern) -> list[str]:
+    anchors = root.find_by_name('a')
+    links = []
+    for anchor in anchors:
+        href = anchor['href']
+        if href is None: continue
+        g = rg.match(href)
+        if not g: continue
+        links.append(g.group('extract'))
+    return links
+
 def get_cursos(root: Tag) -> list[Curso]:
     select = root.find_by_id('cod_oferta_curso')
     if not select:
@@ -106,30 +130,23 @@ def get_cursos(root: Tag) -> list[Curso]:
         cursos.append(curso)
     return cursos
 
-matriz_link_re = r'^.*?cod_matriz_curricular=(?P<cod>.*?)&op=(abrir|fechar)'
+matriz_link_re = re.compile(r'^.*?cod_matriz_curricular=(?P<extract>.*?)&op=(abrir|fechar)')
 def list_matrizes(root: Tag) -> list[int]:
-    anchors = root.filter_children(lambda tag: tag.name == 'a')
-
-    matrizes = []
-    for anchor in anchors:
-        href = anchor['href']
-        if href is None: continue
-        g = re.match(matriz_link_re, href)
-        if not g: continue
-        cod = int(g.group('cod'))
-        matrizes.append(cod)
-    return matrizes
+    return [int(cod) for cod in extract_links_re(root, matriz_link_re)]
 
 Row = list[Tag]
 Group = list[Row]
 Table = list[Group]
 def parse_table(table: Tag) -> Table:
     current_group: Group = []
+    first = True
     groups: list[Group] = [current_group]
     for child in table.children:
         if child.name == 'thead':
-            current_group = []
-            groups.append(current_group)
+            if not first:
+                current_group = []
+                groups.append(current_group)
+            first = False
         elif child.name == 'tbody':
             for table_row in child.find_by_name('tr'):
                 current_group.append(table_row.find_by_name('td'))
@@ -170,34 +187,14 @@ def parse_disciplina_row(row: Row) -> DisciplinaRow:
 
 def parse_matriz(root: Tag, sig_cod_int: int) -> Curso.MatrizCurricular:
     dados = root.find_by_class('dados')[0]
-    ps = dados.find_by_name('p')
+    fields = sig_fields(dados)
 
-    nome = ''
-    descricao = ''
-    periodos = 0
-    minimo = 0
-    maximo = 0
-    vagas = 0
-
-    for p in ps:
-        if not p.text: continue
-        strong = p.find_by_name('strong')
-        if not strong: continue
-        if not strong[0].text: continue
-        key = strong[0].text.strip(':').lower()
-        val = p.text.strip()
-        if key == 'nome':
-            nome = val
-        elif key == 'descrição':
-            descricao = val
-        elif key == 'quantidade de períodos':
-            periodos = int(val)
-        elif key == 'mínimo de períodos letivos':
-            minimo = int(val)
-        elif key == 'máximo de períodos letivos':
-            maximo = int(val)
-        elif key == 'quantidade de vagas semestrais':
-            vagas = int(val)
+    nome = fields['nome']
+    descricao = fields['descrição']
+    periodos = int(fields['quantidade de períodos'])
+    minimo = int(fields['mínimo de períodos letivos'])
+    maximo = int(fields['máximo de períodos letivos'])
+    vagas = int(fields['quantidade de vagas semestrais'])
 
     tables = root.find_by_name('table')
     eletivas_raw = tables[3] if len(tables) >= 4 else None
@@ -232,8 +229,8 @@ def parse_matriz(root: Tag, sig_cod_int: int) -> Curso.MatrizCurricular:
             ensure_existence(row)
         return l
 
-    obrigatorias_parsed = [ensure_rowlist(group_to_rowlist(group)) for group in obrigatorias][2:]
-    eletivas_parsed = [ensure_rowlist(group_to_rowlist(group)) for group in eletivas][2:]
+    obrigatorias_parsed = [ensure_rowlist(group_to_rowlist(group)) for group in obrigatorias][1:]
+    eletivas_parsed = [ensure_rowlist(group_to_rowlist(group)) for group in eletivas][1:]
 
     def get_disciplinas(l: list[str]) -> list[DisciplinaCell]:
         disciplinas: list[Disciplina | str] = []
@@ -288,34 +285,14 @@ def parse_matriz(root: Tag, sig_cod_int: int) -> Curso.MatrizCurricular:
 
 def parse_disciplina_pub(root: Tag) -> Disciplina:
     dados = root.find_by_class('dados')[0]
-    ps = dados.find_by_name('p')
+    fields = sig_fields(dados)
 
-    nome = ''
-    codigo = ''
-    creditos = 0
-    h_teoricas = 0
-    h_praticas = 0
-    oferecimento = 0
-
-    for p in ps:
-        if not p.text: continue
-        strong = p.find_by_name('strong')
-        if not strong: continue
-        if not strong[0].text: continue
-        key = strong[0].text.strip(':').lower()
-        val = p.text.strip()
-        if key == 'nome':
-            nome = val
-        elif key == 'código':
-            codigo = val
-        elif key == 'créditos':
-            creditos = int(val)
-        elif key == 'horas teóricas':
-            h_teoricas = int(val)
-        elif key == 'horas práticas':
-            h_praticas = int(val)
-        elif key == 'oferecimento':
-            oferecimento = val
+    nome = fields['nome']
+    codigo = fields['código']
+    creditos = int(fields['créditos'])
+    h_teoricas = int(fields['horas teóricas'])
+    h_praticas = int(fields['horas práticas'])
+    oferecimento = fields['oferecimento']
 
     d = Disciplina(
         cod=codigo,
@@ -325,5 +302,75 @@ def parse_disciplina_pub(root: Tag) -> Disciplina:
     d.save()
     return d
 
+_oferta_re = re.compile(r'^.*?cod_oferta_disciplina=(?P<extract>.*?)&.*?&op=(abrir|fechar)')
+def list_ofertas(root: Tag) -> list[int]:
+    return [int(cod) for cod in extract_links_re(root, _oferta_re)]
+
+_oferta_pub_name_re = re.compile(r'^(?P<nome>.*?)( \(Capacidade Original:? (?P<capacidade>\d+)\))?$')
 def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
-    pass
+    fields = sig_fields(root)
+    turma = fields['turma']
+    curso = fields['oferta de curso'].split(' - ')[0]
+    prof = fields['docente principal'].split(' (')[0]
+    situacao = fields['situação']
+
+    HorarioLocal = Disciplina.Oferta.HorarioLocal
+    horarios: list[HorarioLocal] = []
+    table = root.find_by_name('table')[0]
+    rows = parse_table(table)[0]
+
+    for dia in range(1, 8):
+        inicio: Optional[HorarioLocal.Horario] = None
+        fim: Optional[HorarioLocal.Horario] = None
+        local: Optional[Local] = None
+
+        for i, row in enumerate(rows):
+            hora = i+7
+            div = row[dia].find_by_class('ocupado')
+            if not div: continue
+            abbrs = div[0].find_by_name('abbr')
+            nome_cap = abbrs[0]['title']
+            if not nome_cap:
+                warning(f'abbr is empty for {hora=}, {dia=}')
+                continue
+            g = _oferta_pub_name_re.match(nome_cap)
+            if not g:
+                warning(f'Could not match {nome_cap=}')
+                continue
+            nome = g.group('nome')
+            cap = g.group('capacidade')
+            capacidade = int(cap) if cap else -1
+
+            abbr = abbrs[0].text
+
+            local = Local.get(abbr)
+            if not local:
+                local = local if local else Local(abbr=abbr, local=nome, ocupacao=capacidade)
+                local.save()
+
+            if inicio:
+                hora += 1
+
+            h = HorarioLocal.Horario(
+                dia=dia-1,
+                hora=hora,
+                minuto=0)
+            if inicio is None:
+                inicio = h
+            fim = h
+
+        if inicio is not None and fim is not None and local is not None:
+            hl = HorarioLocal(
+                inicio=inicio,
+                fim=fim,
+                local=local
+            )
+            horarios.append(hl)
+
+    return Disciplina.Oferta(
+        situacao=situacao,
+        curso=CursoCell(curso=curso),
+        horarios=horarios,
+        turma=turma,
+        professor=ProfessorCell(prof=prof),
+    )
