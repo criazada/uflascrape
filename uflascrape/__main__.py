@@ -8,6 +8,7 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler())
 
 sig = Sig()
-sig.get_cursos()
+cursos = sig.get_cursos()
+sig.ensure_disciplinas(cursos)
 
 open('a.json', 'w').write(json.dumps(dump(), indent=1))

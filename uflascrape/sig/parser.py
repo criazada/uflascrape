@@ -285,3 +285,45 @@ def parse_matriz(root: Tag, sig_cod_int: int) -> Curso.MatrizCurricular:
         obrigatorias=r_obrigatorias,
         eletivas=r_eletivas,
     )
+
+def parse_disciplina_pub(root: Tag) -> Disciplina:
+    dados = root.find_by_class('dados')[0]
+    ps = dados.find_by_name('p')
+
+    nome = ''
+    codigo = ''
+    creditos = 0
+    h_teoricas = 0
+    h_praticas = 0
+    oferecimento = 0
+
+    for p in ps:
+        if not p.text: continue
+        strong = p.find_by_name('strong')
+        if not strong: continue
+        if not strong[0].text: continue
+        key = strong[0].text.strip(':').lower()
+        val = p.text.strip()
+        if key == 'nome':
+            nome = val
+        elif key == 'código':
+            codigo = val
+        elif key == 'créditos':
+            creditos = int(val)
+        elif key == 'horas teóricas':
+            h_teoricas = int(val)
+        elif key == 'horas práticas':
+            h_praticas = int(val)
+        elif key == 'oferecimento':
+            oferecimento = val
+
+    d = Disciplina(
+        cod=codigo,
+        nome=nome,
+        creditos=creditos,
+    )
+    d.save()
+    return d
+
+def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
+    pass

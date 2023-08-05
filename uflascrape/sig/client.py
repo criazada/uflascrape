@@ -1,8 +1,8 @@
 from pydantic import BaseModel
 from typing import Optional, Mapping, Any
 from httpx import Client, Response
-from ..model import Curso
-from .parser import parse_html, get_cursos, list_matrizes, parse_matriz
+from ..model import Curso, Disciplina
+from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub
 from ..log import *
 
 SIG_BASE_URL = 'https://sig.ufla.br'
@@ -29,7 +29,7 @@ if not _sig_modules:
     SigModule(name='logout', url='/modulos/login/sair.php').register()
     SigModule(name='rematricula', url='/modulos/alunos/rematricula/index.php').register()
     SigModule(name='consultar_horario', url='/modulos/alunos/rematricula/consultar_horario_disciplina.php').register()
-    SigModule(name='consultar_horario_pub', url='/modulos/alunos/rematricula/consultar_horario_disciplina.php').register()
+    SigModule(name='consultar_horario_pub', url='/modulos/publico/horario_disciplina/horario_disciplina.php', requires_auth=False).register()
     SigModule(name='matrizes', url='/modulos/publico/matrizes_curriculares/index.php', requires_auth=False).register()
 
 class Sig:
@@ -89,6 +89,35 @@ class Sig:
                 curso.save()
                 curso.matrizes = self._get_matrizes(curso)
         return cursos
+
+    def get_disciplina_pub(self, disc: str, get_ofertas=True) -> Disciplina:
+        info(f'Getting disciplina {disc} ({get_ofertas=})')
+        self._sig_request('GET', 'consultar_horario_pub')
+        r = self._sig_request(
+            'POST', 'consultar_horario_pub',
+            data={
+                'codigo_disciplina': disc,
+                'cod_periodo_letivo': 231, # TODO
+                'enviar': 'Consultar'
+            },
+            params={'xml': 1}
+        )
+
+        root = parse_html(r.text)
+        d = parse_disciplina_pub(root)
+        return d
+
+    def ensure_disciplinas(self, cursos: list[Curso]) -> None:
+        for curso in cursos:
+            for disc in curso.disciplinas():
+                if not isinstance(disc.disc, str): continue
+                d = Disciplina.get(disc.disc)
+                if d is not None:
+                    disc.disc = d
+                else:
+                    disc.disc = self.get_disciplina_pub(disc.disc)
+        for curso in cursos:
+            assert all(isinstance(disc.disc, Disciplina) for disc in curso.disciplinas())
 
     def _get_matrizes(self, curso: Curso) -> list[Curso.MatrizCurricular]:
         info(f'Getting matrizes for {curso=}')
