@@ -2,7 +2,7 @@ import html
 import html.parser
 from pydantic import BaseModel, Field
 from typing import Optional, Generator, Callable
-from ..model import Curso, CursoCell, Disciplina, DisciplinaCell, Local, LocalCell, Professor, ProfessorCell
+from ..model import Curso, Disciplina, RefDisciplina, Local, Professor
 import re
 from ..log import *
 
@@ -125,8 +125,7 @@ def get_cursos(root: Tag) -> list[Curso]:
         title = option['title']
         assert title is not None
         cod, nome = title.split(' - ')
-        curso = Curso.get(cod)
-        curso = curso if curso else Curso(cod=cod, sig_cod_int=int(sig_int), nome=nome)
+        curso = Curso(cod=cod, sig_cod_int=int(sig_int), nome=nome)
         cursos.append(curso)
     return cursos
 
@@ -152,19 +151,17 @@ def parse_table(table: Tag) -> Table:
                 current_group.append(table_row.find_by_name('td'))
     return groups
 
-Reqs = list[str]
+Reqs = list[RefDisciplina]
 class DisciplinaRow(BaseModel):
-    cod: str
-    nome: str
-    creditos: int
+    disc: RefDisciplina
     percentual: float
     forte: Reqs
     minimo: Reqs
     coreq: Reqs
 
-def parse_disciplina_row(row: Row) -> DisciplinaRow:
+def parse_disciplina_row(row: Row) -> Curso.MatrizCurricular.DisciplinaMatriz:
     def parse_reqs(cell: Tag) -> Reqs:
-        return [abbr.text for abbr in cell.find_by_name('abbr')]
+        return [Disciplina.ref(abbr.text) for abbr in cell.find_by_name('abbr')]
 
     cod, nome, creds, percent, forte, minimo, coreq, ementa = row
     cod = cod.text
@@ -175,14 +172,14 @@ def parse_disciplina_row(row: Row) -> DisciplinaRow:
     minimo = parse_reqs(minimo)
     coreq = parse_reqs(coreq)
 
-    return DisciplinaRow(
-        cod=cod,
-        nome=nome,
-        creditos=creds,
+    Disciplina(cod=cod, nome=nome, creditos=creds)
+
+    return Curso.MatrizCurricular.DisciplinaMatriz(
+        disc=Disciplina.ref(cod),
         percentual=percent,
-        forte=forte,
-        minimo=minimo,
-        coreq=coreq,
+        reqs_fortes=forte,
+        reqs_minimos=minimo,
+        coreqs=coreq,
     )
 
 def parse_matriz(root: Tag, sig_cod_int: int) -> Curso.MatrizCurricular:
@@ -216,59 +213,20 @@ def parse_matriz(root: Tag, sig_cod_int: int) -> Curso.MatrizCurricular:
         eletivas = []
     # estagios = tables[4]
 
-    def ensure_existence(row: DisciplinaRow):
-        if not Disciplina.get(row.cod):
-            d = Disciplina(cod=row.cod, nome=row.nome, creditos=row.creditos)
-            d.save()
-
-    def group_to_rowlist(group: Group) -> list[DisciplinaRow]:
+    def group_to_matriz(group: Group) -> list[Curso.MatrizCurricular.DisciplinaMatriz]:
         return [parse_disciplina_row(row) for row in group if len(row) == 8]
 
-    def ensure_rowlist(l: list[DisciplinaRow]):
-        for row in l:
-            ensure_existence(row)
-        return l
-
-    obrigatorias_parsed = [ensure_rowlist(group_to_rowlist(group)) for group in obrigatorias][1:]
-    eletivas_parsed = [ensure_rowlist(group_to_rowlist(group)) for group in eletivas][1:]
-
-    def get_disciplinas(l: list[str]) -> list[DisciplinaCell]:
-        disciplinas: list[Disciplina | str] = []
-        for d in l:
-            disc = Disciplina.get(d)
-            if not disc:
-                warning(f'Disciplina {d} does not exist')
-            disciplinas.append(disc or d)
-        return [DisciplinaCell(disc=c) for c in disciplinas]
-
-    def row_to_matriz(row: DisciplinaRow) -> Curso.MatrizCurricular.DisciplinaMatriz:
-        d = Disciplina.get(row.cod)
-        if not d:
-            raise RuntimeError(f'Disciplina {row.cod} does not exist')
-
-        fortes = get_disciplinas(row.forte)
-        minimos = get_disciplinas(row.minimo)
-        coreqs = get_disciplinas(row.coreq)
-        return Curso.MatrizCurricular.DisciplinaMatriz(
-            disc=d.cell(),
-            percentual=row.percentual,
-            reqs_fortes=fortes,
-            reqs_minimos=minimos,
-            coreqs=coreqs,
-        )
-
-    def group_to_matriz(group: list[DisciplinaRow]) -> list[Curso.MatrizCurricular.DisciplinaMatriz]:
-        return [row_to_matriz(row) for row in group]
+    obrigatorias_parsed = [group_to_matriz(group) for group in obrigatorias][1:]
+    eletivas_parsed = [group_to_matriz(group) for group in eletivas][1:]
 
     DisciplinasMatriz = list[Curso.MatrizCurricular.DisciplinaMatriz]
     r_obrigatorias: dict[int, DisciplinasMatriz] = {}
-    for i, group in enumerate(obrigatorias_parsed):
-        r_obrigatorias[i+1] = group_to_matriz(group)
+    for i, matriz in enumerate(obrigatorias_parsed):
+        r_obrigatorias[i+1] = matriz
 
     r_eletivas: dict[str, DisciplinasMatriz] = {}
-    for i, group in enumerate(eletivas_parsed):
-        if not group: continue
-        r_eletivas[categorias[i]] = group_to_matriz(group)
+    for i, matriz in enumerate(eletivas_parsed):
+        r_eletivas[categorias[i]] = matriz
 
     return Curso.MatrizCurricular(
         cod=nome.replace('/', ''),
@@ -294,13 +252,11 @@ def parse_disciplina_pub(root: Tag) -> Disciplina:
     h_praticas = int(fields['horas práticas'])
     oferecimento = fields['oferecimento']
 
-    d = Disciplina(
+    return Disciplina(
         cod=codigo,
         nome=nome,
         creditos=creditos,
     )
-    d.save()
-    return d
 
 _oferta_re = re.compile(r'^.*?cod_oferta_disciplina=(?P<extract>.*?)&.*?&op=(abrir|fechar)')
 def list_ofertas(root: Tag) -> list[int]:
@@ -312,6 +268,7 @@ def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
     turma = fields['turma']
     curso = fields['oferta de curso'].split(' - ')[0]
     prof = fields['docente principal'].split(' (')[0]
+    prof = Professor(nome=prof)
     situacao = fields['situação']
 
     HorarioLocal = Disciplina.Oferta.HorarioLocal
@@ -343,10 +300,7 @@ def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
 
             abbr = abbrs[0].text
 
-            local = Local.get(abbr)
-            if not local:
-                local = local if local else Local(abbr=abbr, local=nome, ocupacao=capacidade)
-                local.save()
+            local = Local(abbr=abbr, local=nome, ocupacao=capacidade)
 
             if inicio:
                 hora += 1
@@ -363,14 +317,14 @@ def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
             hl = HorarioLocal(
                 inicio=inicio,
                 fim=fim,
-                local=local
+                local=local.as_ref()
             )
             horarios.append(hl)
 
     return Disciplina.Oferta(
         situacao=situacao,
-        curso=CursoCell(curso=curso),
+        curso=Curso.ref(curso),
         horarios=horarios,
         turma=turma,
-        professor=ProfessorCell(prof=prof),
+        professor=prof.as_ref(),
     )

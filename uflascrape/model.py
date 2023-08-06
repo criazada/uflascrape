@@ -1,30 +1,133 @@
-from pydantic import BaseModel, PlainSerializer, BeforeValidator, Field
-from typing import Optional, Annotated, Any
+from pydantic import BaseModel, Field, model_serializer, BeforeValidator, field_validator
+from typing import Optional, Any, Generic, Generator, TypeVar, TypeAlias, cast, Self, Iterable, Annotated, ClassVar
 from collections import defaultdict
-from pydantic import TypeAdapter
-from typing import Generator
-from .log import *
 
-_cursos: dict[str, 'Curso'] = {}
-class Curso(BaseModel):
-    class MatrizCurricular(BaseModel):
-        class DisciplinaMatriz(BaseModel):
-            disc: 'DisciplinaCell'
+from .log import *
+import abc
+
+_refs = defaultdict(dict)
+
+class Resolve(abc.ABC):
+    @abc.abstractmethod
+    def resolve_refs(self): ...
+
+T = TypeVar('T')
+class RefBy(BaseModel, abc.ABC, Generic[T]):
+    _key: Optional[T] = None
+    _key_type: ClassVar[type]
+
+    @abc.abstractmethod
+    def _get_key(self) -> T: ...
+
+    def __new__(cls, **data: Any) -> Self:
+        inst = super().__new__(cls)
+        inst.__init__(**data)
+        k = inst._get_key()
+
+        if k not in _refs[cls]:
+            _refs[cls][k] = inst
+        return _refs[cls][k]
+
+    def __init__(self, **data: Any):
+        super().__init__(**data)
+        self._key = self._get_key()
+
+    def _register(self) -> Self:
+        if self._key not in _refs[self.__class__]:
+            _refs[self.__class__][self._key] = self
+        return _refs[self.__class__][self._key]
+
+    @classmethod
+    def ref(cls, key: T) -> 'Ref[T, Self]':
+        return Ref(root=key, _ref_class=cls)
+
+    @classmethod
+    def _values(cls) -> Iterable[Self]:
+        return _refs[cls].values()
+
+    def as_ref(self) -> 'Ref[T, Self]':
+        return Ref(root=self, _ref_class=self.__class__)
+
+U = TypeVar('U', bound=RefBy)
+class Ref(BaseModel, Generic[T, U]):
+    # T is a type that can be used as a key for U
+    # U is a type that inherits from RefBy[T]
+    root: T | U
+    # _ref_class is the class of the referenced object
+    _ref_class: type[RefBy]
+
+    @model_serializer
+    def _serialize(self) -> T:
+        if isinstance(self.root, self._ref_class):
+            assert self.root._key is not None
+            return self.root._key
+        assert isinstance(self.root, self._ref_class._key_type)
+        return cast(T, self.root)
+
+    def __init__(self, **data: Any):
+        _ref_class = data['_ref_class']
+        v = data['root']
+        if isinstance(v, _ref_class):
+            v = cast(U, v)
+        elif isinstance(v, _ref_class._key_type):
+            v = cast(T, v)
+        else:
+            raise TypeError(f'Invalid type {type(v)} for root (must be {_ref_class} or {_ref_class._key_type})')
+        super().__init__(**data)
+
+    def resolve(self) -> bool:
+        if isinstance(self.root, self._ref_class): return True
+        r = _refs[self._ref_class].get(self.root)
+        if r is not None:
+            self.root = r
+            return True
+        else:
+            return False
+
+    @property
+    def deref(self) -> U:
+        if self.resolve():
+            return cast(U, self.root)
+        raise TypeError(f'Cannot deref {self.root} of type {self._ref_class}')
+
+    @property
+    def key(self) -> T:
+        if isinstance(self.root, RefBy):
+            assert self.root._key is not None
+            return self.root._key
+        return self.root
+
+RefDisciplina: TypeAlias = 'Ref[str, Disciplina] | Ref'
+RefCurso: TypeAlias = 'Ref[str, Curso] | Ref'
+RefLocal: TypeAlias = 'Ref[str, Local] | Ref'
+RefProfessor: TypeAlias = 'Ref[str, Professor] | Ref'
+
+class Curso(RefBy[str], Resolve):
+    _key_type = str
+
+    class MatrizCurricular(BaseModel, Resolve):
+        class DisciplinaMatriz(BaseModel, Resolve):
+            disc: RefDisciplina
             """Disciplina da matriz curricular"""
             percentual: float
             """Percentual mínimo exigido"""
-            reqs_fortes: list['DisciplinaCell']
+            reqs_fortes: list[RefDisciplina]
             """Requisitos fortes"""
-            reqs_minimos: list['DisciplinaCell']
+            reqs_minimos: list[RefDisciplina]
             """Requisitos mínimos"""
-            coreqs: list['DisciplinaCell']
+            coreqs: list[RefDisciplina]
             """Co-requisitos"""
 
-            def disciplinas(self) -> Generator['DisciplinaCell', None, None]:
+            def disciplinas(self) -> Generator[RefDisciplina, None, None]:
                 yield self.disc
                 yield from self.reqs_fortes
                 yield from self.reqs_minimos
                 yield from self.coreqs
+
+            def resolve_refs(self) -> bool:
+                for d in self.disciplinas():
+                    if not d.resolve(): return False
+                return True
 
         cod: str
         """Código da matriz curricular"""
@@ -47,14 +150,19 @@ class Curso(BaseModel):
         eletivas: dict[str, list[DisciplinaMatriz]] = Field(default_factory=lambda: defaultdict(list))
         """Disciplinas eletivas por categoria"""
 
-        def disciplinas(self) -> Generator['DisciplinaCell', None, None]:
-            def _disciplinas(l: list[Curso.MatrizCurricular.DisciplinaMatriz]) -> Generator['DisciplinaCell', None, None]:
+        def disciplinas(self) -> Generator[RefDisciplina, None, None]:
+            def _disciplinas(l: list[Curso.MatrizCurricular.DisciplinaMatriz]) -> Generator[RefDisciplina, None, None]:
                 for d in l:
                     yield from d.disciplinas()
             for l in self.obrigatorias.values():
                 yield from _disciplinas(l)
             for l in self.eletivas.values():
                 yield from _disciplinas(l)
+
+        def resolve_refs(self) -> bool:
+            for d in self.disciplinas():
+                if not d.resolve(): return False
+            return True
 
     cod: str
     """Código do curso"""
@@ -65,81 +173,30 @@ class Curso(BaseModel):
     matrizes: list[MatrizCurricular] = Field(default_factory=list)
     """Matrizes curriculares do curso"""
 
-    def save(self):
-        if self.cod in _cursos:
-            warning(f'Curso {self.cod} already registered')
-            return
-        _cursos[self.cod] = self
+    def resolve_refs(self) -> bool:
+        for m in self.matrizes:
+            if not m.resolve_refs(): return False
+        return True
 
-    def disciplinas(self) -> Generator['DisciplinaCell', None, None]:
-        for matriz in self.matrizes:
-            yield from matriz.disciplinas()
+    def _get_key(self) -> str:
+        return self.cod
 
-    @classmethod
-    def get(cls, cod: 'str | Curso') -> Optional['Curso']:
-        if isinstance(cod, Curso):
-            cod = cod.cod
-        return _cursos.get(cod)
+    def disciplinas(self) -> Generator[RefDisciplina, None, None]:
+        for m in self.matrizes:
+            yield from m.disciplinas()
 
-    @classmethod
-    def _get(cls, cod: str) -> 'Curso':
-        if isinstance(cod, Curso):
-            cod = cod.cod
-        return _cursos[cod]
+class Professor(RefBy[str]):
+    _key_type = str
 
-    @classmethod
-    def load(cls, data: list[Any]):
-        for curso in data:
-            c = Curso.model_validate(curso)
-            _cursos[c.cod] = c
-
-class _CursoCell(BaseModel):
-    curso: str | Curso
-
-CursoCell = Annotated[
-    _CursoCell,
-    PlainSerializer(lambda x: x.curso.cod if isinstance(x.curso, Curso) else x.curso, str)
-]
-
-_professores: dict[str, 'Professor'] = {}
-class Professor(BaseModel):
     nome: str
     """Nome do professor"""
 
-    @classmethod
-    def get(cls, nome: str) -> Optional['Professor']:
-        return _professores.get(nome)
+    def _get_key(self) -> str:
+        return self.nome
 
-    def save(self):
-        if self.nome in _professores:
-            warning(f'Professor {self.nome} already registered')
-            return
-        _professores[self.nome] = self
+class Local(RefBy[str]):
+    _key_type = str
 
-    @classmethod
-    def load(cls, data: list[Any]):
-        for professor in data:
-            p = cls.model_validate(professor)
-            _professores[p.nome] = p
-
-class _ProfessorCell(BaseModel):
-    prof: str | Professor
-
-    @classmethod
-    def get(cls, prof: 'str | Professor | ProfessorCell') -> 'ProfessorCell':
-        if isinstance(prof, (Professor, str)):
-            return cls(prof=prof)
-        if isinstance(prof, _ProfessorCell):
-            return prof
-
-ProfessorCell = Annotated[
-    _ProfessorCell,
-    PlainSerializer(lambda x: x.prof.nome if isinstance(x.prof, Professor) else x.prof, str),
-    BeforeValidator(_ProfessorCell.get)
-]
-
-_locais: dict[str, 'Local'] = {}
-class Local(BaseModel):
     abbr: str
     """Abreviação do local"""
     local: str
@@ -147,44 +204,13 @@ class Local(BaseModel):
     ocupacao: int
     """Capacidade do local"""
 
-    @classmethod
-    def get(cls, abbr: 'str | Local') -> Optional['Local']:
-        if isinstance(abbr, Local):
-            abbr = abbr.abbr
-        return _locais.get(abbr)
+    def _get_key(self) -> str:
+        return self.abbr
 
-    def save(self):
-        if self.abbr in _locais:
-            warning(f'Local {self.abbr} already registered')
-            return
-        _locais[self.abbr] = self
+class Disciplina(RefBy[str], Resolve):
+    _key_type = str
 
-    @classmethod
-    def load(cls, data: list[Any]):
-        for local in data:
-            l = cls.model_validate(local)
-            _locais[l.abbr] = l
-
-class _LocalCell(BaseModel):
-    local: str | Local
-
-    @classmethod
-    def get(cls, abbr: 'str | LocalCell') -> 'LocalCell':
-        if isinstance(abbr, LocalCell):
-            return abbr
-        if abbr in _locais:
-            return cls(local=_locais[abbr])
-        return cls(local=abbr)
-
-LocalCell = Annotated[
-    _LocalCell,
-    PlainSerializer(lambda x: x.local.abbr if isinstance(x.local, Local) else x, str),
-    BeforeValidator(_LocalCell.get)
-]
-
-_disciplinas: dict[str, 'Disciplina'] = {}
-class Disciplina(BaseModel):
-    class Oferta(BaseModel):
+    class Oferta(BaseModel, Resolve):
         class Vagas(BaseModel):
             oferecidas: int
             """Quantidade de vagas oferecidas"""
@@ -195,7 +221,7 @@ class Disciplina(BaseModel):
             pendentes: int
             """Quantidade de matrículas pendentes"""
 
-        class HorarioLocal(BaseModel):
+        class HorarioLocal(BaseModel, Resolve):
             class Horario(BaseModel):
                 dia: int
                 """Dia da semana (0 - domingo, 1 - segunda, ..., 6 - sábado)"""
@@ -208,13 +234,16 @@ class Disciplina(BaseModel):
             """Horário de início da aula"""
             fim: Horario
             """Horário de fim da aula"""
-            local: Local
+            local: RefLocal
             """Local da aula"""
+
+            def resolve_refs(self) -> bool:
+                return self.local.resolve()
 
         situacao: str
         turma: str
-        curso: CursoCell
-        professor: ProfessorCell
+        curso: RefCurso
+        professor: RefProfessor
         """Curso da oferta"""
         normal: Optional[Vagas] = None
         """Vagas normais"""
@@ -227,6 +256,11 @@ class Disciplina(BaseModel):
         bimestre: Optional[str] = None
         """Se a oferta é bimestral, qual o bimestre atual dela"""
 
+        def resolve_refs(self) -> bool:
+            if not self.curso.resolve(): return False
+            if not self.professor.resolve(): return False
+            return True
+
     cod: str
     """Código da disciplina"""
     nome: str
@@ -236,63 +270,33 @@ class Disciplina(BaseModel):
     ofertas: list[Oferta] = Field(default_factory=list)
     """Ofertas da disciplina"""
 
-    @classmethod
-    def get(cls, cod: str) -> Optional['Disciplina']:
-        return _disciplinas.get(cod)
+    def resolve_refs(self) -> bool:
+        for o in self.ofertas:
+            if not o.resolve_refs(): return False
+        return True
 
-    @classmethod
-    def _get(cls, cod: str) -> 'Disciplina':
-        if isinstance(cod, Disciplina):
-            cod = cod.cod
-        return _disciplinas[cod]
-
-    def save(self):
-        if self.cod in _disciplinas:
-            warning(f'Disciplina {self.cod} already registered')
-            return
-        _disciplinas[self.cod] = self
-
-    @classmethod
-    def load(cls, data: list[Any]):
-        for disciplina in data:
-            d = cls.model_validate(disciplina)
-            _disciplinas[d.cod] = d
-
-    def cell(self) -> '_DisciplinaCell':
-        return _DisciplinaCell(disc=self)
-
-class _DisciplinaCell(BaseModel):
-    disc: str | Disciplina
-
-    @classmethod
-    def get(cls, cod: 'str | _DisciplinaCell') -> '_DisciplinaCell':
-        if isinstance(cod, _DisciplinaCell):
-            return cod
-        if cod in _disciplinas:
-            return cls(disc=_disciplinas[cod])
-        return cls(disc=cod)
-
-DisciplinaCell = Annotated[
-    _DisciplinaCell,
-    PlainSerializer(lambda x: x.disc.cod if isinstance(x.disc, Disciplina) else x.disc, str),
-    BeforeValidator(_DisciplinaCell.get)
-]
+    def _get_key(self) -> str:
+        return self.cod
 
 def load(data: dict[str, Any]):
-    Curso.load(data['cursos'])
-    Local.load(data['locais'])
-    Professor.load(data['professores'])
-    Disciplina.load(data['disciplinas'])
+    for curso in data['cursos']:
+        Curso(**curso)
+    for local in data['locais']:
+        Local(**local)
+    for professor in data['professores']:
+        Professor(**professor)
+    for disciplina in data['disciplinas']:
+        Disciplina(**disciplina)
 
-def adapt_and_dump(data: Any) -> Any:
-    return TypeAdapter(type(data)).dump_python(data)
+def _dump(data: Iterable[BaseModel]) -> Any:
+    return [d.model_dump() for d in data]
 
 def dump() -> dict[str, Any]:
     return {
-        'cursos': adapt_and_dump(_cursos),
-        'locais': adapt_and_dump(_locais),
-        'professores': adapt_and_dump(_professores),
-        'disciplinas': adapt_and_dump(_disciplinas)
+        'cursos': _dump(Curso._values()),
+        'locais': _dump(Local._values()),
+        'professores': _dump(Professor._values()),
+        'disciplinas': _dump(Disciplina._values())
     }
 
 __all__ = [

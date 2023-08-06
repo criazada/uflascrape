@@ -1,6 +1,6 @@
 from .sig.client import Sig
 import logging
-from .model import dump, _disciplinas
+from .model import dump, Disciplina, Curso
 import json
 from .log import *
 
@@ -10,7 +10,7 @@ logger.addHandler(logging.StreamHandler())
 sig = Sig()
 cursos = sig.get_cursos()
 sig.ensure_disciplinas(cursos)
-d = _disciplinas['GCC125']
-d.ofertas = sig.get_ofertas(d)
+for disc in Disciplina._values():
+    disc.ofertas = sig.get_ofertas(disc.as_ref())
 
 open('a.json', 'w').write(json.dumps(dump(), indent=1))

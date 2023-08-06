@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional, Mapping, Any
 from httpx import Client, Response
-from ..model import Curso, Disciplina
+from ..model import Curso, RefDisciplina, Disciplina
 from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub, parse_oferta_pub, list_ofertas
 from ..log import *
 
@@ -86,7 +86,6 @@ class Sig:
         cursos = get_cursos(root)
         if get_matrizes:
             for curso in cursos:
-                curso.save()
                 curso.matrizes = self._get_matrizes(curso)
         return cursos
 
@@ -110,14 +109,10 @@ class Sig:
     def ensure_disciplinas(self, cursos: list[Curso]) -> None:
         for curso in cursos:
             for disc in curso.disciplinas():
-                if not isinstance(disc.disc, str): continue
-                d = Disciplina.get(disc.disc)
-                if d is not None:
-                    disc.disc = d
-                else:
-                    disc.disc = self.get_disciplina_pub(disc.disc)
+                if not disc.resolve():
+                    self.get_disciplina_pub(disc.key)
         for curso in cursos:
-            assert all(isinstance(disc.disc, Disciplina) for disc in curso.disciplinas())
+            assert all(disc.resolve() for disc in curso.disciplinas())
 
     def _get_matrizes(self, curso: Curso) -> list[Curso.MatrizCurricular]:
         info(f'Getting matrizes for {curso=}')
@@ -147,12 +142,12 @@ class Sig:
             matrizes.append(matriz)
         return matrizes
 
-    def get_ofertas(self, disc: Disciplina) -> list[Disciplina.Oferta]:
+    def get_ofertas(self, disc: RefDisciplina) -> list[Disciplina.Oferta]:
         info(f'Getting ofertas for {disc=}')
         r = self._sig_request(
             'POST', 'consultar_horario_pub',
             data={
-                'codigo_disciplina': disc.cod,
+                'codigo_disciplina': disc.key,
                 'cod_periodo_letivo': 231, # TODO
                 'enviar': 'Consultar'
             },
