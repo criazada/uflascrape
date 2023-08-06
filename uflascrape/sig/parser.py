@@ -2,7 +2,7 @@ import html
 import html.parser
 from pydantic import BaseModel, Field
 from typing import Optional, Generator, Callable
-from ..model import Curso, Disciplina, RefDisciplina, Local, Professor, Periodo
+from ..model import Curso, Disciplina, RefDisciplina, Local, Professor, Periodo, RefCurso, RefLocal, RefProfessor
 import re
 from ..log import *
 
@@ -166,16 +166,10 @@ def parse_table(table: Tag) -> Table:
     return groups
 
 Reqs = list[RefDisciplina]
-class DisciplinaRow(BaseModel):
-    disc: RefDisciplina
-    percentual: float
-    forte: Reqs
-    minimo: Reqs
-    coreq: Reqs
 
 def parse_disciplina_row(row: Row) -> Curso.MatrizCurricular.DisciplinaMatriz:
     def parse_reqs(cell: Tag) -> Reqs:
-        return [Disciplina.ref(abbr.text) for abbr in cell.find_by_name('abbr')]
+        return [abbr.text for abbr in cell.find_by_name('abbr')]
 
     cod, nome, creds, percent, forte, minimo, coreq, ementa = row
     cod = cod.text
@@ -189,7 +183,7 @@ def parse_disciplina_row(row: Row) -> Curso.MatrizCurricular.DisciplinaMatriz:
     Disciplina(cod=cod, nome=nome, creditos=creds, ofertas={})
 
     return Curso.MatrizCurricular.DisciplinaMatriz(
-        disc=Disciplina.ref(cod),
+        disc=cod,
         percentual=percent,
         reqs_fortes=forte,
         reqs_minimos=minimo,
@@ -332,16 +326,16 @@ def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
                 dia=dia-1,
                 inicio=inicio,
                 fim=fim,
-                local=local.as_ref()
+                local=local
             )
             horarios.append(hl)
 
     return Disciplina.Oferta(
         situacao=situacao,
-        curso=Curso.ref(curso),
+        curso=curso,
         horarios=horarios,
         turma=turma,
-        professor=prof.as_ref(),
+        professor=prof,
     )
 
 _consulta_oferta_re = re.compile(r'^.*?cod_oferta_disciplina=(?P<extract>.*?)&op=(abrir|fechar)')
@@ -360,7 +354,7 @@ def parse_consulta_oferta(root: Tag) -> tuple[str, list[Disciplina.OfertaParcial
             continue
         disc = g.group('disc')
         turma = g.group('turma')
-        parcial = Disciplina.OfertaParcial(disc=Disciplina.ref(disc), turma=turma, sig_cod_int=int(sig_int_code))
+        parcial = Disciplina.OfertaParcial(disc=disc, turma=turma, sig_cod_int=int(sig_int_code))
         ofertas.append(parcial)
 
     return csrf.get('value'), ofertas
@@ -416,17 +410,17 @@ def parse_oferta(root: Tag) -> Oferta:
             dia=int(dia.text),
             inicio=inicio,
             fim=fim,
-            local=local.as_ref()
+            local=local
         )
 
         horarios.append(h)
 
     return Oferta(
         situacao=situacao,
-        curso=Curso.ref(curso),
+        curso=curso,
         horarios=horarios,
         normal=normal,
         especial=especial,
         turma=turma,
-        professor=Professor(nome=professor).as_ref(),
+        professor=professor,
     )

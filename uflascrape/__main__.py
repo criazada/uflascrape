@@ -1,6 +1,6 @@
 from .sig.client import Sig
 import logging
-from .model import dump, Disciplina, Curso, Periodo, load
+from .model import dump, Disciplina, Curso, load
 import json
 from .log import *
 
@@ -17,11 +17,10 @@ try:
     for i, disc in enumerate(discs):
         print(f'{i+1}/{len(discs)} {disc}')
         for periodo in periodos:
-            k = periodo._get_key()
-            if k in disc.ofertas:
+            if periodo.key in disc.ofertas:
                 print(f'already got {periodo}, skipping')
                 continue
 
-            sig.get_disciplina_pub(disc.as_ref(), periodo.as_ref())
+            sig.get_disciplina_pub(disc, periodo)
 finally:
     open('a.json', 'w').write(json.dumps(dump(), indent='\t'))

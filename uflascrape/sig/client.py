@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional, Mapping, Any
 from httpx import Client, Response
-from ..model import Curso, RefDisciplina, Disciplina, Periodo, RefPeriodo
+from ..model import Curso, _RefDisciplina, Disciplina, Periodo, _RefPeriodo, RefDisciplina, RefPeriodo
 from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub, parse_oferta_pub, list_ofertas, parse_consulta_oferta, parse_oferta, get_periodos
 from ..log import *
 
@@ -132,11 +132,12 @@ class Sig:
     def get_disciplina_pub(self, disc: RefDisciplina, periodo: RefPeriodo, get_ofertas: bool = True) -> Disciplina:
         info(f'Getting disciplina {disc} ({periodo}) ({get_ofertas=})')
 
-        cod_periodo = periodo.deref.sig_cod_int
+        periodo = _RefPeriodo.d(periodo)
+        cod_periodo = periodo.sig_cod_int
         r = self._sig_request(
             'POST', 'consultar_horario_pub',
             data={
-                'codigo_disciplina': disc.key,
+                'codigo_disciplina': _RefDisciplina.r(disc).key,
                 'cod_periodo_letivo': cod_periodo,
                 'enviar': 'Consultar'
             },
@@ -183,7 +184,7 @@ class Sig:
             csrf, ofertas = parse_consulta_oferta(root)
             self._last_csrf = csrf
 
-        disc = disciplina and disciplina.key or ''
+        disc = disciplina and _RefDisciplina.r(disciplina).key or ''
 
         r = self._sig_request(
             'POST', 'consultar',
@@ -206,7 +207,7 @@ class Sig:
         return ofertas
 
     def get_oferta(self, oferta: Disciplina.OfertaParcial) -> Disciplina.Oferta:
-        if self._last_disc != oferta.disc.key:
+        if self._last_disc != _RefDisciplina.r(oferta.disc).key:
             self.list_ofertas(disciplina=oferta.disc)
 
         params = {'cod_oferta_disciplina': oferta.sig_cod_int}
