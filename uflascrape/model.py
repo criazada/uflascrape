@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, model_serializer, BeforeValidator, field_validator
+from pydantic import BaseModel, Field, model_serializer, model_validator, field_validator, RootModel
 from typing import Optional, Any, Generic, Generator, TypeVar, TypeAlias, cast, Self, Iterable, Annotated, ClassVar
 from collections import defaultdict
 
@@ -12,16 +12,21 @@ class Resolve(abc.ABC):
     def resolve_refs(self): ...
 
 T = TypeVar('T')
-class RefBy(BaseModel, abc.ABC, Generic[T]):
+V = TypeVar('V', bound='Ref')
+class RefBy(BaseModel, abc.ABC, Generic[T, V]):
     _key: Optional[T] = None
     _key_type: ClassVar[type]
 
     @abc.abstractmethod
     def _get_key(self) -> T: ...
 
+    @classmethod
+    @abc.abstractmethod
+    def _get_ref_type(cls) -> 'type[Ref]': ...
+
     def __new__(cls, **data: Any) -> Self:
         inst = super().__new__(cls)
-        inst.__init__(**data)
+        inst.__init__(_init=True, **data)
         k = inst._get_key()
 
         if k not in _refs[cls]:
@@ -29,56 +34,60 @@ class RefBy(BaseModel, abc.ABC, Generic[T]):
         return _refs[cls][k]
 
     def __init__(self, **data: Any):
+        if '_init' not in data: return
+
         super().__init__(**data)
         self._key = self._get_key()
+        self._init = True
 
     def _register(self) -> Self:
-        if self._key not in _refs[self.__class__]:
-            _refs[self.__class__][self._key] = self
-        return _refs[self.__class__][self._key]
+        cls = self.__class__
+        if self._key not in _refs[cls]:
+            _refs[cls][self._key] = self
+        return _refs[cls][self._key]
 
     @classmethod
-    def ref(cls, key: T) -> 'Ref[T, Self]':
-        return Ref(root=key, _ref_class=cls)
+    def ref(cls, key: T) -> V:
+        return cast(V, cls._get_ref_type()(key))
 
     @classmethod
     def _values(cls) -> Iterable[Self]:
         return _refs[cls].values()
 
-    def as_ref(self) -> 'Ref[T, Self]':
-        return Ref(root=self, _ref_class=self.__class__)
+    def as_ref(self) -> V:
+        return cast(V, self.__class__._get_ref_type()(self))
 
 U = TypeVar('U', bound=RefBy)
-class Ref(BaseModel, Generic[T, U]):
+class Ref(RootModel[T | U], Generic[T, U]):
     # T is a type that can be used as a key for U
     # U is a type that inherits from RefBy[T]
     root: T | U
-    # _ref_class is the class of the referenced object
-    _ref_class: type[RefBy]
+    _ref_type: ClassVar[type[RefBy]]
 
     @model_serializer
     def _serialize(self) -> T:
-        if isinstance(self.root, self._ref_class):
+        cls = self.__class__
+        if isinstance(self.root, cls._ref_type):
             assert self.root._key is not None
             return self.root._key
-        assert isinstance(self.root, self._ref_class._key_type)
-        return cast(T, self.root)
+        else:
+            assert isinstance(self.root, cls._ref_type._key_type)
+            return cast(T, self.root)
 
-    def __init__(self, **data: Any):
-        _ref_class = data['_ref_class']
-        v = data['root']
-        if isinstance(v, _ref_class):
+    def __init__(self, v: T | U, **data: Any):
+        cls = self.__class__
+        if isinstance(v, cls._ref_type):
             v = cast(U, v)
-        elif isinstance(v, _ref_class._key_type):
+        elif isinstance(v, cls._ref_type._key_type):
             v = cast(T, v)
         else:
-            raise TypeError(f'Invalid type {type(v)} for root (must be {_ref_class} or {_ref_class._key_type})')
-        super().__init__(**data)
-        self._ref_class = _ref_class
+            raise TypeError(f'Invalid type {type(v)} for root (must be {cls._ref_type} or {cls._ref_type._key_type})')
+        super().__init__(v, **data)
 
     def resolve(self) -> bool:
-        if isinstance(self.root, self._ref_class): return True
-        r = _refs[self._ref_class].get(self.root)
+        cls = self.__class__
+        if isinstance(self.root, cls._ref_type): return True
+        r = _refs[self._ref_type].get(self.root)
         if r is not None:
             self.root = r
             return True
@@ -89,37 +98,35 @@ class Ref(BaseModel, Generic[T, U]):
     def deref(self) -> U:
         if self.resolve():
             return cast(U, self.root)
-        raise TypeError(f'Cannot deref {self.root} of type {self._ref_class}')
+        raise TypeError(f'Cannot deref {self.root} of type {self.__class__._ref_type}')
 
     @property
     def key(self) -> T:
         if isinstance(self.root, RefBy):
             assert self.root._key is not None
-            return self.root._key
+            return cast(T, self.root._key)
         return self.root
 
-RefDisciplina: TypeAlias = 'Ref[str, Disciplina] | Ref'
-RefCurso: TypeAlias = 'Ref[str, Curso] | Ref'
-RefLocal: TypeAlias = 'Ref[str, Local] | Ref'
-RefProfessor: TypeAlias = 'Ref[str, Professor] | Ref'
+    def __str__(self) -> str:
+        return self.root.__str__()
 
-class Curso(RefBy[str], Resolve):
+class Curso(RefBy[str, 'RefCurso'], Resolve):
     _key_type = str
 
     class MatrizCurricular(BaseModel, Resolve):
         class DisciplinaMatriz(BaseModel, Resolve):
-            disc: RefDisciplina
+            disc: 'RefDisciplina'
             """Disciplina da matriz curricular"""
             percentual: float
             """Percentual mínimo exigido"""
-            reqs_fortes: list[RefDisciplina]
+            reqs_fortes: list['RefDisciplina']
             """Requisitos fortes"""
-            reqs_minimos: list[RefDisciplina]
+            reqs_minimos: list['RefDisciplina']
             """Requisitos mínimos"""
-            coreqs: list[RefDisciplina]
+            coreqs: list['RefDisciplina']
             """Co-requisitos"""
 
-            def disciplinas(self) -> Generator[RefDisciplina, None, None]:
+            def disciplinas(self) -> Generator['RefDisciplina', None, None]:
                 yield self.disc
                 yield from self.reqs_fortes
                 yield from self.reqs_minimos
@@ -151,8 +158,8 @@ class Curso(RefBy[str], Resolve):
         eletivas: dict[str, list[DisciplinaMatriz]] = Field(default_factory=lambda: defaultdict(list))
         """Disciplinas eletivas por categoria"""
 
-        def disciplinas(self) -> Generator[RefDisciplina, None, None]:
-            def _disciplinas(l: list[Curso.MatrizCurricular.DisciplinaMatriz]) -> Generator[RefDisciplina, None, None]:
+        def disciplinas(self) -> Generator['RefDisciplina', None, None]:
+            def _disciplinas(l: list[Curso.MatrizCurricular.DisciplinaMatriz]) -> Generator['RefDisciplina', None, None]:
                 for d in l:
                     yield from d.disciplinas()
             for l in self.obrigatorias.values():
@@ -182,11 +189,18 @@ class Curso(RefBy[str], Resolve):
     def _get_key(self) -> str:
         return self.cod
 
-    def disciplinas(self) -> Generator[RefDisciplina, None, None]:
+    def disciplinas(self) -> Generator['RefDisciplina', None, None]:
         for m in self.matrizes:
             yield from m.disciplinas()
 
-class Professor(RefBy[str]):
+    def __str__(self) -> str:
+        return f'{self.cod} - {self.nome}'
+
+    @classmethod
+    def _get_ref_type(cls) -> type[Ref]:
+        return RefCurso
+
+class Professor(RefBy[str, 'RefProfessor']):
     _key_type = str
 
     nome: str
@@ -195,7 +209,14 @@ class Professor(RefBy[str]):
     def _get_key(self) -> str:
         return self.nome
 
-class Local(RefBy[str]):
+    def __str__(self) -> str:
+        return self.nome
+
+    @classmethod
+    def _get_ref_type(cls) -> type[Ref]:
+        return RefProfessor
+
+class Local(RefBy[str, 'RefLocal']):
     _key_type = str
 
     abbr: str
@@ -208,11 +229,40 @@ class Local(RefBy[str]):
     def _get_key(self) -> str:
         return self.abbr
 
-class Disciplina(RefBy[str], Resolve):
+    def __str__(self) -> str:
+        return f'{self.abbr} - {self.local}'
+
+    @classmethod
+    def _get_ref_type(cls) -> type[Ref]:
+        return RefLocal
+
+class Periodo(RefBy[str, 'RefPeriodo']):
+    _key_type = str
+
+    nome: str
+    """Nome do período"""
+    sig_cod_int: str
+    """Código interno do SIG"""
+
+    @property
+    def nome_short(self) -> str:
+        return self.nome.split(' - ')[0]
+
+    def _get_key(self) -> str:
+        return self.nome
+
+    def __str__(self) -> str:
+        return self.nome
+
+    @classmethod
+    def _get_ref_type(cls) -> type[Ref]:
+        return RefPeriodo
+
+class Disciplina(RefBy[str, 'RefDisciplina'], Resolve):
     _key_type = str
 
     class OfertaParcial(BaseModel, Resolve):
-        disc: RefDisciplina
+        disc: 'RefDisciplina'
         turma: str
         sig_cod_int: int
 
@@ -248,7 +298,7 @@ class Disciplina(RefBy[str], Resolve):
             """Horário de início da aula"""
             fim: Horario
             """Horário de fim da aula"""
-            local: RefLocal
+            local: 'RefLocal'
             """Local da aula"""
 
             def resolve_refs(self) -> bool:
@@ -256,8 +306,9 @@ class Disciplina(RefBy[str], Resolve):
 
         situacao: str
         turma: str
-        curso: RefCurso
-        professor: RefProfessor
+        curso: 'RefCurso'
+        professor: 'RefProfessor'
+
         """Curso da oferta"""
         normal: Optional[Vagas] = None
         """Vagas normais"""
@@ -281,16 +332,23 @@ class Disciplina(RefBy[str], Resolve):
     """Nome da disciplina"""
     creditos: int
     """Quantidade de créditos da disciplina"""
-    ofertas: list[Oferta] = Field(default_factory=list)
-    """Ofertas da disciplina"""
+    ofertas: dict[str, list[Oferta]]
+    """Ofertas da disciplina por período"""
 
     def resolve_refs(self) -> bool:
-        for o in self.ofertas:
-            if not o.resolve_refs(): return False
+        for os in self.ofertas.values():
+            if any(not o.resolve_refs() for o in os): return False
         return True
 
     def _get_key(self) -> str:
         return self.cod
+
+    def __str__(self) -> str:
+        return f'{self.cod} - {self.nome}'
+
+    @classmethod
+    def _get_ref_type(cls) -> type[Ref]:
+        return RefDisciplina
 
 def load(data: dict[str, Any]):
     for curso in data['cursos']:
@@ -301,6 +359,8 @@ def load(data: dict[str, Any]):
         Professor(**professor)
     for disciplina in data['disciplinas']:
         Disciplina(**disciplina)
+    for periodo in data['periodos']:
+        Periodo(**periodo)
 
 def _dump(data: Iterable[BaseModel]) -> Any:
     return [d.model_dump() for d in data]
@@ -310,8 +370,24 @@ def dump() -> dict[str, Any]:
         'cursos': _dump(Curso._values()),
         'locais': _dump(Local._values()),
         'professores': _dump(Professor._values()),
-        'disciplinas': _dump(Disciplina._values())
+        'disciplinas': _dump(Disciplina._values()),
+        'periodos': _dump(Periodo._values())
     }
+
+class RefDisciplina(Ref[str, 'Disciplina']):
+    _ref_type = Disciplina
+
+class RefCurso(Ref[str, 'Curso']):
+    _ref_type = Curso
+
+class RefLocal(Ref[str, 'Local']):
+    _ref_type = Local
+
+class RefProfessor(Ref[str, 'Professor']):
+    _ref_type = Professor
+
+class RefPeriodo(Ref[str, 'Periodo']):
+    _ref_type = Periodo
 
 __all__ = [
     "Curso",

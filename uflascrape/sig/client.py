@@ -1,8 +1,8 @@
 from pydantic import BaseModel
 from typing import Optional, Mapping, Any
 from httpx import Client, Response
-from ..model import Curso, RefDisciplina, Disciplina
-from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub, parse_oferta_pub, list_ofertas, parse_consulta_oferta, parse_oferta
+from ..model import Curso, RefDisciplina, Disciplina, Periodo, RefPeriodo
+from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub, parse_oferta_pub, list_ofertas, parse_consulta_oferta, parse_oferta, get_periodos
 from ..log import *
 
 SIG_BASE_URL = 'https://sig.ufla.br'
@@ -99,14 +99,15 @@ class Sig:
         # get matrizes
         for curso in cursos:
             curso.matrizes = self._get_matrizes(curso)
-            # ensure all matrizes are resolved
-            for disc in curso.disciplinas():
-                if not disc.resolve():
-                    warning(f'Cannot resolve {disc=}')
         return cursos
 
+    def get_periodos(self) -> list[Periodo]:
+        r = self._sig_request('GET', 'consultar_horario_pub')
+        root = parse_html(r.text)
+        return get_periodos(root)
+
     def _get_matrizes(self, curso: Curso) -> list[Curso.MatrizCurricular]:
-        info(f'Getting matrizes for {curso=}')
+        info(f'Getting matrizes for {curso}')
         r = self._sig_request(
             'POST', 'matrizes',
             params={'xml': 1},
@@ -126,31 +127,12 @@ class Sig:
             matriz = parse_matriz(parse_html(r.text), cod_mat)
             r = self._sig_request('GET', 'matrizes', params=_replace(params, op='fechar'))
             matrizes.append(matriz)
-            for disc in matriz.disciplinas():
-                if not disc.resolve():
-                    self.get_disciplina_pub(disc.key)
-                    disc.resolve()
         return matrizes
 
-    def get_disciplina_pub(self, disc: str, get_ofertas=True) -> Disciplina:
-        info(f'Getting disciplina {disc} ({get_ofertas=})')
-        self._sig_request('GET', 'consultar_horario_pub')
-        r = self._sig_request(
-            'POST', 'consultar_horario_pub',
-            data={
-                'codigo_disciplina': disc,
-                'cod_periodo_letivo': 231, # TODO
-                'enviar': 'Consultar'
-            },
-            params={'xml': 1}
-        )
+    def get_disciplina_pub(self, disc: RefDisciplina, periodo: RefPeriodo, get_ofertas: bool = True) -> Disciplina:
+        info(f'Getting disciplina {disc} ({periodo}) ({get_ofertas=})')
 
-        root = parse_html(r.text)
-        d = parse_disciplina_pub(root)
-        return d
-
-    def get_ofertas_pub(self, disc: RefDisciplina, cod_periodo: int) -> list[Disciplina.Oferta]:
-        info(f'Getting ofertas for {disc=}')
+        cod_periodo = periodo.deref.sig_cod_int
         r = self._sig_request(
             'POST', 'consultar_horario_pub',
             data={
@@ -160,7 +142,13 @@ class Sig:
             },
             params={'xml': 1}
         )
+
         root = parse_html(r.text)
+        d = parse_disciplina_pub(root)
+
+        # return early if we don't need to get ofertas
+        if not get_ofertas: return d
+
         ofertas = []
         cod_ofertas = list_ofertas(root)
         for cod_oferta in cod_ofertas:
@@ -177,14 +165,16 @@ class Sig:
                 params=_replace(params, op='fechar'),
             )
             ofertas.append(oferta)
-        return ofertas
+
+        d.ofertas[periodo.key] = ofertas
+        return d
 
     def list_ofertas(self,
-                    matriz: bool = False,
-                    modulo: str | int = 'T',
-                    disciplina: Optional[RefDisciplina] = None,
-                    nome: Optional[str] = None,
-                    bimestre: Optional[str] = None) -> list[Disciplina.OfertaParcial]:
+                     matriz: bool = False,
+                     modulo: str | int = 'T',
+                     disciplina: Optional[RefDisciplina] = None,
+                     nome: Optional[str] = None,
+                     bimestre: Optional[str] = None) -> list[Disciplina.OfertaParcial]:
         if not self._listed_once:
             self._sig_request('GET', 'rematricula')
             r = self._sig_request('GET', 'consultar')

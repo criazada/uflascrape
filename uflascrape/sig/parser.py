@@ -2,7 +2,7 @@ import html
 import html.parser
 from pydantic import BaseModel, Field
 from typing import Optional, Generator, Callable
-from ..model import Curso, Disciplina, RefDisciplina, Local, Professor
+from ..model import Curso, Disciplina, RefDisciplina, Local, Professor, Periodo
 import re
 from ..log import *
 
@@ -132,6 +132,17 @@ def get_cursos(root: Tag) -> list[Curso]:
         cursos.append(curso)
     return cursos
 
+def get_periodos(root: Tag) -> list[Periodo]:
+    periodos = []
+    for group in root.find_by_name('optgroup'):
+        campus = group.get('label')
+        for option in group.find_by_name('option'):
+            nome = option.text
+            sig_cod = option.get('value')
+            periodo = Periodo(nome=f'{nome} - {campus}', sig_cod_int=sig_cod)
+            periodos.append(periodo)
+    return periodos
+
 matriz_link_re = re.compile(r'^.*?cod_matriz_curricular=(?P<extract>.*?)&op=(abrir|fechar)')
 def list_matrizes(root: Tag) -> list[int]:
     return [int(cod) for cod, _ in extract_links_re(root, matriz_link_re)]
@@ -175,7 +186,7 @@ def parse_disciplina_row(row: Row) -> Curso.MatrizCurricular.DisciplinaMatriz:
     minimo = parse_reqs(minimo)
     coreq = parse_reqs(coreq)
 
-    Disciplina(cod=cod, nome=nome, creditos=creds)
+    Disciplina(cod=cod, nome=nome, creditos=creds, ofertas={})
 
     return Curso.MatrizCurricular.DisciplinaMatriz(
         disc=Disciplina.ref(cod),
@@ -259,6 +270,7 @@ def parse_disciplina_pub(root: Tag) -> Disciplina:
         cod=codigo,
         nome=nome,
         creditos=creditos,
+        ofertas={}
     )
 
 _oferta_re = re.compile(r'^.*?cod_oferta_disciplina=(?P<extract>.*?)&.*?&op=(abrir|fechar)')
