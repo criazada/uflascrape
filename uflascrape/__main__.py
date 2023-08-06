@@ -9,8 +9,7 @@ logger.addHandler(logging.StreamHandler())
 
 sig = Sig()
 cursos = sig.get_cursos()
-sig.ensure_disciplinas(cursos)
 for disc in Disciplina._values():
-    disc.ofertas = sig.get_ofertas(disc.as_ref())
+    disc.ofertas = sig.get_ofertas_pub(disc.as_ref(), 231)
 
 open('a.json', 'w').write(json.dumps(dump(), indent=1))

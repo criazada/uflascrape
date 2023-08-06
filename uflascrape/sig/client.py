@@ -2,11 +2,16 @@ from pydantic import BaseModel
 from typing import Optional, Mapping, Any
 from httpx import Client, Response
 from ..model import Curso, RefDisciplina, Disciplina
-from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub, parse_oferta_pub, list_ofertas
+from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub, parse_oferta_pub, list_ofertas, parse_consulta_oferta, parse_oferta
 from ..log import *
 
 SIG_BASE_URL = 'https://sig.ufla.br'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/111.0'
+
+def _replace(d: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    d = d.copy()
+    d.update(kwargs)
+    return d
 
 _sig_modules: dict[str, 'SigModule'] = {}
 class SigModule(BaseModel):
@@ -39,6 +44,9 @@ class Sig:
                  user_agent: str = USER_AGENT):
         self._client = Client(base_url=sig_url, headers={'User-Agent': user_agent})
         self._logged_in = False
+        self._last_csrf = ''
+        self._last_disc: str = ''
+        self._listed_once = False
 
     def _sig_request(self,
                      method: str,
@@ -84,10 +92,45 @@ class Sig:
         r = self._sig_request('GET', 'matrizes')
         root = parse_html(r.text)
         cursos = get_cursos(root)
-        if get_matrizes:
-            for curso in cursos:
-                curso.matrizes = self._get_matrizes(curso)
+
+        # return early if we don't need to get matrizes
+        if not get_matrizes: return cursos
+
+        # get matrizes
+        for curso in cursos:
+            curso.matrizes = self._get_matrizes(curso)
+            # ensure all matrizes are resolved
+            for disc in curso.disciplinas():
+                if not disc.resolve():
+                    warning(f'Cannot resolve {disc=}')
         return cursos
+
+    def _get_matrizes(self, curso: Curso) -> list[Curso.MatrizCurricular]:
+        info(f'Getting matrizes for {curso=}')
+        r = self._sig_request(
+            'POST', 'matrizes',
+            params={'xml': 1},
+            data={
+                'cod_oferta_curso': curso.sig_cod_int,
+                'enviar': 'Consultar'
+            }
+        )
+        root = parse_html(r.text)
+        cod_mats = list_matrizes(root)
+        debug(f'Got matrizes {cod_mats=}')
+        matrizes = []
+        for cod_mat in cod_mats:
+            info(f'Getting matriz {cod_mat=}')
+            params = {'cod_matriz_curricular': cod_mat}
+            r = self._sig_request('GET', 'matrizes', params=_replace(params, op='abrir'))
+            matriz = parse_matriz(parse_html(r.text), cod_mat)
+            r = self._sig_request('GET', 'matrizes', params=_replace(params, op='fechar'))
+            matrizes.append(matriz)
+            for disc in matriz.disciplinas():
+                if not disc.resolve():
+                    self.get_disciplina_pub(disc.key)
+                    disc.resolve()
+        return matrizes
 
     def get_disciplina_pub(self, disc: str, get_ofertas=True) -> Disciplina:
         info(f'Getting disciplina {disc} ({get_ofertas=})')
@@ -106,49 +149,13 @@ class Sig:
         d = parse_disciplina_pub(root)
         return d
 
-    def ensure_disciplinas(self, cursos: list[Curso]) -> None:
-        for curso in cursos:
-            for disc in curso.disciplinas():
-                if not disc.resolve():
-                    self.get_disciplina_pub(disc.key)
-        for curso in cursos:
-            assert all(disc.resolve() for disc in curso.disciplinas())
-
-    def _get_matrizes(self, curso: Curso) -> list[Curso.MatrizCurricular]:
-        info(f'Getting matrizes for {curso=}')
-        r = self._sig_request(
-            'POST', 'matrizes',
-            params={'xml': 1},
-            data={
-                'cod_oferta_curso': curso.sig_cod_int,
-                'enviar': 'Consultar'
-            }
-        )
-        root = parse_html(r.text)
-        cod_mats = list_matrizes(root)
-        debug(f'Got matrizes {cod_mats=}')
-        matrizes = []
-        for cod_mat in cod_mats:
-            info(f'Getting matriz {cod_mat=}')
-            r = self._sig_request(
-                'GET', 'matrizes',
-                params={'cod_matriz_curricular': cod_mat, 'op': 'abrir'}
-            )
-            matriz = parse_matriz(parse_html(r.text), cod_mat)
-            r = self._sig_request(
-                'GET', 'matrizes',
-                params={'cod_matriz_curricular': cod_mat, 'op': 'fechar'}
-            )
-            matrizes.append(matriz)
-        return matrizes
-
-    def get_ofertas(self, disc: RefDisciplina) -> list[Disciplina.Oferta]:
+    def get_ofertas_pub(self, disc: RefDisciplina, cod_periodo: int) -> list[Disciplina.Oferta]:
         info(f'Getting ofertas for {disc=}')
         r = self._sig_request(
             'POST', 'consultar_horario_pub',
             data={
                 'codigo_disciplina': disc.key,
-                'cod_periodo_letivo': 231, # TODO
+                'cod_periodo_letivo': cod_periodo,
                 'enviar': 'Consultar'
             },
             params={'xml': 1}
@@ -158,23 +165,72 @@ class Sig:
         cod_ofertas = list_ofertas(root)
         for cod_oferta in cod_ofertas:
             info(f'Getting oferta {cod_oferta=}')
+            params = {'cod_oferta_disciplina': cod_oferta, 'cod_periodo_letivo': cod_periodo}
             r = self._sig_request(
                 'GET', 'consultar_horario_pub',
-                params={
-                    'cod_oferta_disciplina': cod_oferta,
-                    'cod_periodo_letivo': 231, # TODO
-                    'op': 'abrir'
-                },
+                params=_replace(params, op='abrir')
             )
             root = parse_html(r.text)
             oferta = parse_oferta_pub(root)
             self._sig_request(
                 'GET', 'consultar_horario_pub',
-                params={
-                    'cod_oferta_disciplina': cod_oferta,
-                    'cod_periodo_letivo': 231, # TODO
-                    'op': 'fechar'
-                },
+                params=_replace(params, op='fechar'),
             )
             ofertas.append(oferta)
         return ofertas
+
+    def list_ofertas(self,
+                    matriz: bool = False,
+                    modulo: str | int = 'T',
+                    disciplina: Optional[RefDisciplina] = None,
+                    nome: Optional[str] = None,
+                    bimestre: Optional[str] = None) -> list[Disciplina.OfertaParcial]:
+        if not self._listed_once:
+            self._sig_request('GET', 'rematricula')
+            r = self._sig_request('GET', 'consultar')
+            self._listed_once = True
+            root = parse_html(r.text)
+            csrf, ofertas = parse_consulta_oferta(root)
+            self._last_csrf = csrf
+
+        disc = disciplina and disciplina.key or ''
+
+        r = self._sig_request(
+            'POST', 'consultar',
+            data={
+                'pesquisar_matriz': 1 if matriz else 0,
+                'modulo': modulo,
+                'codigo': disc,
+                'nome_disciplina': nome or '',
+                'bimestre': bimestre or 'T',
+                'token_csrf': self._last_csrf,
+                'enviar': 'Consultar'
+            }
+        )
+
+        root = parse_html(r.text)
+        csrf, ofertas = parse_consulta_oferta(root)
+        self._last_csrf = csrf
+        self._last_disc = disc
+
+        return ofertas
+
+    def get_oferta(self, oferta: Disciplina.OfertaParcial) -> Disciplina.Oferta:
+        if self._last_disc != oferta.disc.key:
+            self.list_ofertas(disciplina=oferta.disc)
+
+        params = {'cod_oferta_disciplina': oferta.sig_cod_int}
+        r = self._sig_request(
+            'GET', 'consultar',
+            params=_replace(params, op='abrir')
+        )
+
+        root = parse_html(r.text)
+        parsed = parse_oferta(root)
+
+        r = self._sig_request(
+            'GET', 'consultar',
+            params=_replace(params, op='fechar')
+        )
+
+        return parsed

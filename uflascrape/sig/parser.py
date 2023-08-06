@@ -14,6 +14,9 @@ class Tag(BaseModel):
     content: Optional[str] = None
     attrs: dict[str, str | None] = Field(default_factory=dict)
 
+    def get(self, attr: str, default: str = '') -> str:
+        return self.attrs.get(attr) or default
+
     @property
     def text(self) -> str:
         return self.content or ''
@@ -104,7 +107,7 @@ def sig_fields(dados: Tag) -> dict[str, str]:
         fields[key] = val
     return fields
 
-def extract_links_re(root: Tag, rg: re.Pattern) -> list[str]:
+def extract_links_re(root: Tag, rg: re.Pattern) -> list[tuple[str, Tag]]:
     anchors = root.find_by_name('a')
     links = []
     for anchor in anchors:
@@ -112,7 +115,8 @@ def extract_links_re(root: Tag, rg: re.Pattern) -> list[str]:
         if href is None: continue
         g = rg.match(href)
         if not g: continue
-        links.append(g.group('extract'))
+
+        links.append((g.group('extract'), anchor))
     return links
 
 def get_cursos(root: Tag) -> list[Curso]:
@@ -121,9 +125,8 @@ def get_cursos(root: Tag) -> list[Curso]:
         raise RuntimeError('Could not find select tag')
     cursos = []
     for option in select.find_by_name('option'):
-        sig_int = option['value'] or '-1'
-        title = option['title']
-        assert title is not None
+        sig_int = option.get('value')
+        title = option.get('title')
         cod, nome = title.split(' - ')
         curso = Curso(cod=cod, sig_cod_int=int(sig_int), nome=nome)
         cursos.append(curso)
@@ -131,7 +134,7 @@ def get_cursos(root: Tag) -> list[Curso]:
 
 matriz_link_re = re.compile(r'^.*?cod_matriz_curricular=(?P<extract>.*?)&op=(abrir|fechar)')
 def list_matrizes(root: Tag) -> list[int]:
-    return [int(cod) for cod in extract_links_re(root, matriz_link_re)]
+    return [int(cod) for cod, _ in extract_links_re(root, matriz_link_re)]
 
 Row = list[Tag]
 Group = list[Row]
@@ -197,7 +200,7 @@ def parse_matriz(root: Tag, sig_cod_int: int) -> Curso.MatrizCurricular:
     eletivas_raw = tables[3] if len(tables) >= 4 else None
     if eletivas_raw:
         categorias: dict[int, str] = {}
-        categorias_headers = eletivas_raw.filter_children(lambda tag: tag.name == 'th' and tag['colspan'] == '8')
+        categorias_headers = eletivas_raw.filter_children(lambda tag: tag.name == 'th' and tag.get('colspan') == '8')
         for i, t in enumerate(categorias_headers):
             categorias[i] = t.text
     else:
@@ -260,7 +263,7 @@ def parse_disciplina_pub(root: Tag) -> Disciplina:
 
 _oferta_re = re.compile(r'^.*?cod_oferta_disciplina=(?P<extract>.*?)&.*?&op=(abrir|fechar)')
 def list_ofertas(root: Tag) -> list[int]:
-    return [int(cod) for cod in extract_links_re(root, _oferta_re)]
+    return [int(cod) for cod, _ in extract_links_re(root, _oferta_re)]
 
 _oferta_pub_name_re = re.compile(r'^(?P<nome>.*?)( \(Capacidade Original:? (?P<capacidade>\d+)\))?$')
 def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
@@ -286,7 +289,7 @@ def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
             div = row[dia].find_by_class('ocupado')
             if not div: continue
             abbrs = div[0].find_by_name('abbr')
-            nome_cap = abbrs[0]['title']
+            nome_cap = abbrs[0].get('title')
             if not nome_cap:
                 warning(f'abbr is empty for {hora=}, {dia=}')
                 continue
@@ -306,7 +309,6 @@ def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
                 hora += 1
 
             h = HorarioLocal.Horario(
-                dia=dia-1,
                 hora=hora,
                 minuto=0)
             if inicio is None:
@@ -315,6 +317,7 @@ def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
 
         if inicio is not None and fim is not None and local is not None:
             hl = HorarioLocal(
+                dia=dia-1,
                 inicio=inicio,
                 fim=fim,
                 local=local.as_ref()
@@ -327,4 +330,91 @@ def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
         horarios=horarios,
         turma=turma,
         professor=prof.as_ref(),
+    )
+
+_consulta_oferta_re = re.compile(r'^.*?cod_oferta_disciplina=(?P<extract>.*?)&op=(abrir|fechar)')
+_oferta_parcial_re = re.compile(r'^(?P<disc>\w+) - (?P<nome>.*?) - (?P<turma>\w+)( \(((?P<bimestre>\d)º Bimestre|(?P<semestral>Semestral))\))?\s*$')
+
+# TODO: preparar para a abertura de matrícula do SIG
+def parse_consulta_oferta(root: Tag) -> tuple[str, list[Disciplina.OfertaParcial]]:
+    ofertas: list[Disciplina.OfertaParcial] = []
+
+    csrf = list(root.filter_children(lambda tag: tag.name == 'input' and tag.get('name') == 'token_csrf'))[0]
+    for sig_int_code, anchor in extract_links_re(root, _consulta_oferta_re):
+        t = anchor.get('title')
+        g = _oferta_parcial_re.match(t)
+        if not g:
+            warning(f'Could not match {t=}')
+            continue
+        disc = g.group('disc')
+        turma = g.group('turma')
+        parcial = Disciplina.OfertaParcial(disc=Disciplina.ref(disc), turma=turma, sig_cod_int=int(sig_int_code))
+        ofertas.append(parcial)
+
+    return csrf.get('value'), ofertas
+
+# TODO: preparar para a abertura de matrícula do SIG
+Oferta = Disciplina.Oferta
+def parse_oferta(root: Tag) -> Oferta:
+    fieldsets = root.find_by_name('fieldset')
+
+    info = sig_fields(root)
+    situacao = info['situação']
+    curso = info['oferta de curso']
+    turma = info['turma']
+    professor = info['professor']
+
+    normal: Optional[Oferta.Vagas] = None
+    especial: Optional[Oferta.Vagas] = None
+
+    for fieldset in fieldsets:
+        fields = sig_fields(fieldset)
+        oferecidas = fields['vagas oferecidas']
+        ocupadas = fields['vagas ocupadas']
+        restantes = fields['vagas restantes'].strip('*')
+        pendentes = fields['solicitações pendentes']
+
+        vagas = Oferta.Vagas(
+            oferecidas=int(oferecidas),
+            ocupadas=int(ocupadas),
+            restantes=int(restantes),
+            pendentes=int(pendentes),
+        )
+
+        if 'vagas_normais' in fieldset.classes:
+            normal = vagas
+        elif 'vagas_especiais' in fieldset.classes:
+            especial = vagas
+
+    if normal is None or especial is None:
+        warning(f'Could not find vagas for {curso=}')
+
+    table = root.find_by_name('table')[0]
+    rows = parse_table(table)[0]
+
+    horarios = []
+    for row in rows:
+        local, abbr, maximo, ocupacao, tipo, dia, inicio, fim = row
+
+        inicio = Oferta.HorarioLocal.Horario.from_hora(inicio.text)
+        fim = Oferta.HorarioLocal.Horario.from_hora(fim.text)
+        local = Local(abbr=abbr.text, local=local.text, ocupacao=int(ocupacao.text))
+
+        h = Oferta.HorarioLocal(
+            dia=int(dia.text),
+            inicio=inicio,
+            fim=fim,
+            local=local.as_ref()
+        )
+
+        horarios.append(h)
+
+    return Oferta(
+        situacao=situacao,
+        curso=Curso.ref(curso),
+        horarios=horarios,
+        normal=normal,
+        especial=especial,
+        turma=turma,
+        professor=Professor(nome=professor).as_ref(),
     )

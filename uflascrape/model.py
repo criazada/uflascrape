@@ -74,6 +74,7 @@ class Ref(BaseModel, Generic[T, U]):
         else:
             raise TypeError(f'Invalid type {type(v)} for root (must be {_ref_class} or {_ref_class._key_type})')
         super().__init__(**data)
+        self._ref_class = _ref_class
 
     def resolve(self) -> bool:
         if isinstance(self.root, self._ref_class): return True
@@ -210,6 +211,14 @@ class Local(RefBy[str]):
 class Disciplina(RefBy[str], Resolve):
     _key_type = str
 
+    class OfertaParcial(BaseModel, Resolve):
+        disc: RefDisciplina
+        turma: str
+        sig_cod_int: int
+
+        def resolve_refs(self):
+            return self.disc.resolve()
+
     class Oferta(BaseModel, Resolve):
         class Vagas(BaseModel):
             oferecidas: int
@@ -223,13 +232,18 @@ class Disciplina(RefBy[str], Resolve):
 
         class HorarioLocal(BaseModel, Resolve):
             class Horario(BaseModel):
-                dia: int
-                """Dia da semana (0 - domingo, 1 - segunda, ..., 6 - sábado)"""
                 hora: int
                 """Hora do dia"""
                 minuto: int
                 """Minuto da hora"""
 
+                @classmethod
+                def from_hora(cls, hora: str) -> Self:
+                    h, m = hora.split(':')
+                    return cls(hora=int(h), minuto=int(m))
+
+            dia: int
+            """Dia da semana (0 - domingo, 1 - segunda, ..., 6 - sábado)"""
             inicio: Horario
             """Horário de início da aula"""
             fim: Horario
