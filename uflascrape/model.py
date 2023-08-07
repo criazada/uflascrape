@@ -300,12 +300,12 @@ class Cardapio(RefBy[date]):
     data: date
 
     class Refeicao(BaseModel):
-        base: list[str] = Field(default_factory=list)
-        guarnicao: list[str] = Field(default_factory=list)
-        salada: list[str] = Field(default_factory=list)
-        proteico: list[str] = Field(default_factory=list)
-        vegetariano: list[str] = Field(default_factory=list)
-        vegano: list[str] = Field(default_factory=list)
+        base: str
+        guarnicao: str
+        salada: str
+        proteico: str
+        vegetariano: str
+        vegano: str
         observacao: str
 
     almoco: Optional[Refeicao] = None

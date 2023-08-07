@@ -443,6 +443,9 @@ def parse_cardapio(root: Tag, data: date) -> Cardapio:
             return [st.strip() for st in s]
         return [t.text]
 
+    def opcoes_to_str(t: Tag) -> str:
+        return '\n'.join(split_opcoes(t))
+
     rows = parse_table(tables[0])[0]
     refeicoes: list[Optional[Cardapio.Refeicao]] = [None, None]
     for i in range(len(rows[0])):
@@ -451,12 +454,12 @@ def parse_cardapio(root: Tag, data: date) -> Cardapio:
             refeicao.append(row[i])
         base, guarnicao, salada, proteico, vegetariano, vegano, observacao = refeicao
         refeicao_cardapio = Cardapio.Refeicao(
-            base=split_opcoes(base),
-            guarnicao=split_opcoes(guarnicao),
-            salada=split_opcoes(salada),
-            proteico=split_opcoes(proteico),
-            vegetariano=split_opcoes(vegetariano),
-            vegano=split_opcoes(vegano),
+            base=opcoes_to_str(base),
+            guarnicao=opcoes_to_str(guarnicao),
+            salada=opcoes_to_str(salada),
+            proteico=opcoes_to_str(proteico),
+            vegetariano=opcoes_to_str(vegetariano),
+            vegano=opcoes_to_str(vegano),
             observacao=observacao.text,
         )
         refeicoes[i] = refeicao_cardapio
