@@ -175,7 +175,7 @@ class Curso(RefBy[str]):
             yield from m.disciplinas()
 
     def __str__(self) -> str:
-        return f'{self.cod} - {self.nome}'
+        return self.cod
 
 class Professor(RefBy[str]):
     _key_type = str
@@ -203,7 +203,7 @@ class Local(RefBy[str]):
         return self.abbr
 
     def __str__(self) -> str:
-        return f'{self.abbr} - {self.local}'
+        return self.abbr
 
 class Periodo(RefBy[str]):
     _key_type = str
@@ -293,7 +293,7 @@ class Disciplina(RefBy[str]):
         return self.cod
 
     def __str__(self) -> str:
-        return f'{self.cod} - {self.nome}'
+        return self.cod
 
 class Cardapio(RefBy[date]):
     _key_type = date

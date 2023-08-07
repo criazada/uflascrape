@@ -5,6 +5,7 @@ import json
 from .log import *
 from datetime import timedelta, date
 from itertools import count
+from .sql import build_sql
 
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler())
@@ -15,7 +16,10 @@ sig = Sig()
 cursos = list(Curso._values())
 periodos = sig.get_periodos()
 discs = list(Disciplina._values())
+s = build_sql(cursos, discs, '2023/1 - Campus Sede')
+open('c.sql', 'w', encoding='utf-8').write(s)
 try:
+    raise RuntimeError('no')
     for i, disc in enumerate(discs):
         print(f'{i+1}/{len(discs)} {disc}')
         for periodo in periodos:
@@ -37,4 +41,5 @@ try:
         else:
             n_fail = 0
 finally:
-    open('a.json', 'w').write(json.dumps(dump(), indent='\t'))
+    pass
+    # open('a.json', 'w').write(json.dumps(dump(), indent='\t'))
