@@ -2,16 +2,17 @@ import html
 import html.parser
 from pydantic import BaseModel, Field
 from typing import Optional, Generator, Callable
-from ..model import Curso, Disciplina, RefDisciplina, Local, Professor, Periodo, RefCurso, RefLocal, RefProfessor
+from ..model import Curso, Disciplina, RefDisciplina, Local, Professor, Periodo, Cardapio
 import re
 from ..log import *
+from datetime import date
 
 class Tag(BaseModel):
     name: str
     children: list['Tag'] = Field(default_factory=list)
     classes: list[str] = Field(default_factory=list)
     id: Optional[str] = None
-    content: Optional[str] = None
+    content: list[str] = Field(default_factory=list)
     attrs: dict[str, str | None] = Field(default_factory=dict)
 
     def get(self, attr: str, default: str = '') -> str:
@@ -19,7 +20,7 @@ class Tag(BaseModel):
 
     @property
     def text(self) -> str:
-        return self.content or ''
+        return ' '.join(self.content)
 
     def filter_children(self, filter: Callable[['Tag'], bool], recursive: bool = True) -> Generator['Tag', None, None]:
         for child in self.children:
@@ -87,7 +88,7 @@ class HtmlParser(html.parser.HTMLParser):
     def handle_data(self, data: str) -> None:
         data = data.strip()
         if data:
-            self._current.content = data
+            self._current.content.append(data)
 
 def parse_html(html: str) -> Tag:
     parser = HtmlParser()
@@ -423,4 +424,45 @@ def parse_oferta(root: Tag) -> Oferta:
         especial=especial,
         turma=turma,
         professor=professor,
+    )
+
+def parse_cardapio(root: Tag, data: date) -> Cardapio:
+    tables = root.find_by_name('table')
+
+    if not tables:
+        return Cardapio(data=data)
+
+    def split_opcoes(t: Tag) -> list[str]:
+        if len(t.content) > 1:
+            return t.content[:]
+        s = t.text.split('/')
+        if len(s) > 1:
+            return [st.strip() for st in s]
+        s = t.text.split(',')
+        if len(s) > 1:
+            return [st.strip() for st in s]
+        return [t.text]
+
+    rows = parse_table(tables[0])[0]
+    refeicoes: list[Optional[Cardapio.Refeicao]] = [None, None]
+    for i in range(len(rows[0])):
+        refeicao: list[Tag] = []
+        for row in rows:
+            refeicao.append(row[i])
+        base, guarnicao, salada, proteico, vegetariano, vegano, observacao = refeicao
+        refeicao_cardapio = Cardapio.Refeicao(
+            base=split_opcoes(base),
+            guarnicao=split_opcoes(guarnicao),
+            salada=split_opcoes(salada),
+            proteico=split_opcoes(proteico),
+            vegetariano=split_opcoes(vegetariano),
+            vegano=split_opcoes(vegano),
+            observacao=observacao.text,
+        )
+        refeicoes[i] = refeicao_cardapio
+
+    return Cardapio(
+        data=data,
+        almoco=refeicoes[0],
+        jantar=refeicoes[1],
     )

@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field, model_serializer, model_validator, field_validator, RootModel, BeforeValidator
-from typing import Optional, Any, Generic, Generator, TypeVar, TypeAlias, cast, Self, Iterable, Annotated, ClassVar, Union
+from pydantic import BaseModel, Field, model_serializer, field_serializer, RootModel, BeforeValidator
+from typing import Optional, Any, Generic, Generator, TypeVar, cast, Self, Iterable, Annotated, ClassVar
 from collections import defaultdict
+from datetime import date
 
 from .log import *
 import abc
@@ -294,6 +295,29 @@ class Disciplina(RefBy[str]):
     def __str__(self) -> str:
         return f'{self.cod} - {self.nome}'
 
+class Cardapio(RefBy[date]):
+    _key_type = date
+    data: date
+
+    class Refeicao(BaseModel):
+        base: list[str] = Field(default_factory=list)
+        guarnicao: list[str] = Field(default_factory=list)
+        salada: list[str] = Field(default_factory=list)
+        proteico: list[str] = Field(default_factory=list)
+        vegetariano: list[str] = Field(default_factory=list)
+        vegano: list[str] = Field(default_factory=list)
+        observacao: str
+
+    almoco: Optional[Refeicao] = None
+    jantar: Optional[Refeicao] = None
+
+    @field_serializer('data')
+    def serialize_data(self, v: date) -> str:
+        return v.isoformat()
+
+    def _get_key(self) -> date:
+        return self.data
+
 def load(data: dict[str, Any]):
     for curso in data['cursos']:
         Curso(**curso)
@@ -305,6 +329,8 @@ def load(data: dict[str, Any]):
         Disciplina(**disciplina)
     for periodo in data['periodos']:
         Periodo(**periodo)
+    for cardapio in data['cardapios']:
+        Cardapio(**cardapio)
 
 def _dump(data: Iterable[BaseModel]) -> Any:
     return [d.model_dump() for d in data]
@@ -315,28 +341,33 @@ def dump() -> dict[str, Any]:
         'locais': _dump(Local._values()),
         'professores': _dump(Professor._values()),
         'disciplinas': _dump(Disciplina._values()),
-        'periodos': _dump(Periodo._values())
+        'periodos': _dump(Periodo._values()),
+        'cardapios': _dump(Cardapio._values())
     }
 
-class _RefDisciplina(Ref[str, 'Disciplina']):
+class _RefDisciplina(Ref[str, Disciplina]):
     _ref_type = Disciplina
 RefDisciplina = Annotated[str | _RefDisciplina | Disciplina, BeforeValidator(_RefDisciplina.r)]
 
-class _RefCurso(Ref[str, 'Curso']):
+class _RefCurso(Ref[str, Curso]):
     _ref_type = Curso
 RefCurso = Annotated[str | _RefCurso | Curso, BeforeValidator(_RefCurso.r)]
 
-class _RefLocal(Ref[str, 'Local']):
+class _RefLocal(Ref[str, Local]):
     _ref_type = Local
 RefLocal = Annotated[str | _RefLocal | Local, BeforeValidator(_RefLocal.r)]
 
-class _RefProfessor(Ref[str, 'Professor']):
+class _RefProfessor(Ref[str, Professor]):
     _ref_type = Professor
 RefProfessor = Annotated[str | _RefProfessor | Professor, BeforeValidator(_RefProfessor.r)]
 
-class _RefPeriodo(Ref[str, 'Periodo']):
+class _RefPeriodo(Ref[str, Periodo]):
     _ref_type = Periodo
 RefPeriodo = Annotated[str | _RefPeriodo | Periodo, BeforeValidator(_RefPeriodo.r)]
+
+class _RefCardapio(Ref[str, Cardapio]):
+    _ref_type = Cardapio
+RefCardapio = Annotated[str | _RefCardapio | Cardapio, BeforeValidator(_RefCardapio.r)]
 
 __all__ = [
     "Curso",

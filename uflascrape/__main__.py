@@ -3,6 +3,8 @@ import logging
 from .model import dump, Disciplina, Curso, load
 import json
 from .log import *
+from datetime import timedelta, date
+from itertools import count
 
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler())
@@ -22,5 +24,17 @@ try:
                 continue
 
             sig.get_disciplina_pub(disc, periodo)
+    n_fail = 0
+    for i in count():
+        d = date.today() - timedelta(days=i)
+        print(d.isoformat())
+        c = sig.get_cardapio(d)
+        print(c)
+        if c.almoco is None and c.jantar is None:
+            n_fail += 1
+            if n_fail > 30:
+                break
+        else:
+            n_fail = 0
 finally:
     open('a.json', 'w').write(json.dumps(dump(), indent='\t'))

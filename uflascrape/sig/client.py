@@ -1,9 +1,10 @@
 from pydantic import BaseModel
 from typing import Optional, Mapping, Any
 from httpx import Client, Response
-from ..model import Curso, _RefDisciplina, Disciplina, Periodo, _RefPeriodo, RefDisciplina, RefPeriodo
-from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub, parse_oferta_pub, list_ofertas, parse_consulta_oferta, parse_oferta, get_periodos
+from ..model import Curso, _RefDisciplina, Disciplina, Periodo, _RefPeriodo, RefDisciplina, RefPeriodo, Cardapio
+from .parser import parse_html, get_cursos, list_matrizes, parse_matriz, parse_disciplina_pub, parse_oferta_pub, list_ofertas, parse_consulta_oferta, parse_oferta, get_periodos, parse_cardapio
 from ..log import *
+from datetime import date
 
 SIG_BASE_URL = 'https://sig.ufla.br'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/111.0'
@@ -36,6 +37,7 @@ if not _sig_modules:
     SigModule(name='consultar_horario', url='/modulos/alunos/rematricula/consultar_horario_disciplina.php').register()
     SigModule(name='consultar_horario_pub', url='/modulos/publico/horario_disciplina/horario_disciplina.php', requires_auth=False).register()
     SigModule(name='matrizes', url='/modulos/publico/matrizes_curriculares/index.php', requires_auth=False).register()
+    SigModule(name='cardapio', url='/modulos/publico/praec/consultar_cardapios.php', requires_auth=False).register()
 
 class Sig:
     def __init__(self,
@@ -225,3 +227,17 @@ class Sig:
         )
 
         return parsed
+
+    def get_cardapio(self, data: date) -> Cardapio:
+        r = self._sig_request(
+            'POST', 'cardapio',
+            data={
+                'data_dia': data.day,
+                'data_mes': data.month,
+                'data_ano': data.year,
+                'enviar': 'Consultar'
+            }
+        )
+
+        root = parse_html(r.text)
+        return parse_cardapio(root, data)
