@@ -1,33 +1,47 @@
 from .sig.client import Sig
 import logging
-from .model import dump, Disciplina, Curso, load
+from .model import dump, Disciplina, Curso, load, Professor, _RefDisciplina
 import json
 from .log import *
 from datetime import timedelta, date
 from itertools import count
 from .sql import build_sql
+import dotenv
+import os
+
+dotenv.load()
 
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler())
-load(json.load(open('a.json')))
-
+load(json.load(open('g.json')))
+Curso(cod='G030', sig_cod_int=0, nome='ABI Engenharia')
+Curso(cod='G043', sig_cod_int=0, nome='ABI Educação Física')
+Curso(cod='G055', sig_cod_int=0, nome='ABI Letras')
 sig = Sig()
 # cursos = sig.get_cursos()
-cursos = list(Curso._values())
-periodos = sig.get_periodos()
-discs = list(Disciplina._values())
-s = build_sql(cursos, discs, '2023/1 - Campus Sede')
-open('c.sql', 'w', encoding='utf-8').write(s)
+# periodos = sig.get_periodos()
+
+
 try:
     raise RuntimeError('no')
-    for i, disc in enumerate(discs):
-        print(f'{i+1}/{len(discs)} {disc}')
-        for periodo in periodos:
-            if periodo.key in disc.ofertas:
-                print(f'already got {periodo}, skipping')
-                continue
+    sig.login(os.getenv('USER'), os.getenv('PASSWORD'))
+    ofertas = sig.list_ofertas()
 
-            sig.get_disciplina_pub(disc, periodo)
+    periodo = '2023/2 - Campus Sede'
+    discis = {}
+    for i, parcial in enumerate(ofertas):
+        print(f'{i+1}/{len(ofertas)} {parcial}')
+        k = _RefDisciplina.r(parcial.disc).key
+        if k not in discis:
+            discis[k] = sig.get_disciplina_pub(parcial.disc, periodo)
+        oferta = sig.get_oferta(parcial)
+        for of in discis[k].ofertas[periodo]:
+            if of.turma == oferta.turma:
+                of.horarios = oferta.horarios
+                of.normal = oferta.normal
+                of.especial = oferta.especial
+                break
+
     n_fail = 0
     for i in count():
         d = date.today() - timedelta(days=i)
@@ -41,5 +55,9 @@ try:
         else:
             n_fail = 0
 finally:
-    pass
-    # open('a.json', 'w').write(json.dumps(dump(), indent='\t'))
+    cursos = list(Curso._values())
+    discs = list(Disciplina._values())
+    profs = list(Professor._values())
+    s = build_sql(cursos, discs, profs, '2023/2 - Campus Sede')
+    open('d.sql', 'w', encoding='utf-8').write(s)
+    # open('g.json', 'w').write(json.dumps(dump(), indent='\t'))

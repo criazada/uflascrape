@@ -13,6 +13,9 @@ class RefBy(BaseModel, abc.ABC, Generic[K]):
     _key_type: ClassVar[type]
 
     @abc.abstractmethod
+    def _merge(self, other: Self) -> None: ...
+
+    @abc.abstractmethod
     def _get_key(self) -> K: ...
 
     @property
@@ -26,6 +29,7 @@ class RefBy(BaseModel, abc.ABC, Generic[K]):
 
         if k not in _refs[cls]:
             _refs[cls][k] = inst
+        _refs[cls][k]._merge(inst)
         return _refs[cls][k]
 
     def __init__(self, **data: Any):
@@ -33,12 +37,6 @@ class RefBy(BaseModel, abc.ABC, Generic[K]):
 
         super().__init__(**data)
         self._init = True
-
-    def _register(self) -> Self:
-        cls = self.__class__
-        if self.key not in _refs[cls]:
-            _refs[cls][self.key] = self
-        return _refs[cls][self.key]
 
     @classmethod
     def _values(cls) -> Iterable[Self]:
@@ -176,18 +174,30 @@ class Curso(RefBy[str]):
 
     def __str__(self) -> str:
         return self.cod
+    
+    def _merge(self, other: Self): ...
 
 class Professor(RefBy[str]):
     _key_type = str
 
     nome: str
     """Nome do professor"""
+    departamento: str
 
     def _get_key(self) -> str:
         return self.nome
 
     def __str__(self) -> str:
         return self.nome
+    
+    def _merge(self, other: Self):
+        if self.departamento == '':
+            self.departamento = other.departamento
+
+    @classmethod
+    def from_full(cls, full: str) -> Self:
+        nome, _, departamento = full.partition(' (')
+        return cls(nome=nome, departamento=departamento[:-1])
 
 class Local(RefBy[str]):
     _key_type = str
@@ -204,6 +214,8 @@ class Local(RefBy[str]):
 
     def __str__(self) -> str:
         return self.abbr
+    
+    def _merge(self, other: Self): ...
 
 class Periodo(RefBy[str]):
     _key_type = str
@@ -222,6 +234,8 @@ class Periodo(RefBy[str]):
 
     def __str__(self) -> str:
         return self.nome
+    
+    def _merge(self, other: Self): ...
 
 class Disciplina(RefBy[str]):
     _key_type = str
@@ -251,6 +265,7 @@ class Disciplina(RefBy[str]):
 
                 @classmethod
                 def from_hora(cls, hora: str) -> Self:
+                    if hora == '': return cls(hora=-1, minuto=-1)
                     h, m = hora.split(':')
                     return cls(hora=int(h), minuto=int(m))
 
@@ -266,7 +281,9 @@ class Disciplina(RefBy[str]):
         situacao: str
         turma: str
         curso: 'RefCurso'
-        professor: 'RefProfessor'
+        professor_principal: Optional['RefProfessor'] = None
+        professores_alocados: list['RefProfessor']
+        professores_visitantes: list['RefProfessor']
 
         """Curso da oferta"""
         normal: Optional[Vagas] = None
@@ -295,6 +312,29 @@ class Disciplina(RefBy[str]):
     def __str__(self) -> str:
         return self.cod
 
+    def merge_ofertas(self, periodo: str, other_ofertas: list[Oferta]):
+            if periodo not in self.ofertas:
+                self.ofertas[periodo] = other_ofertas
+            else:
+                for other_oferta in other_ofertas:
+                    for oferta in self.ofertas[periodo]:
+                        if other_oferta.turma == oferta.turma:
+                            oferta.normal = oferta.normal or other_oferta.normal
+                            oferta.professor_principal = oferta.professor_principal or other_oferta.professor_principal
+                            oferta.professores_alocados = oferta.professores_alocados or other_oferta.professores_alocados
+                            oferta.professores_visitantes = oferta.professores_visitantes or other_oferta.professores_visitantes
+                            oferta.especial = oferta.especial or other_oferta.especial
+                            oferta.horarios = oferta.horarios or other_oferta.horarios
+                            oferta.semestre = oferta.semestre or other_oferta.semestre
+                            oferta.bimestre = oferta.bimestre or other_oferta.bimestre
+                            break
+                    else:
+                        self.ofertas[periodo].append(other_oferta)
+
+    def _merge(self, other: Self) -> None:
+        for periodo, ofertas in other.ofertas.items():
+            self.merge_ofertas(periodo, ofertas)
+
 class Cardapio(RefBy[date]):
     _key_type = date
     data: date
@@ -317,6 +357,12 @@ class Cardapio(RefBy[date]):
 
     def _get_key(self) -> date:
         return self.data
+
+    def _merge(self, other: Self):
+        if self.almoco is None:
+            self.almoco = other.almoco
+        if self.jantar is None:
+            self.jantar = other.jantar
 
 def load(data: dict[str, Any]):
     for curso in data['cursos']:

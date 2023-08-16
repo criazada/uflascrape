@@ -2,18 +2,24 @@ import html
 import html.parser
 from pydantic import BaseModel, Field
 from typing import Optional, Generator, Callable
-from ..model import Curso, Disciplina, RefDisciplina, Local, Professor, Periodo, Cardapio
+from ..model import Curso, Disciplina, RefDisciplina, Local, Professor, RefProfessor, Periodo, Cardapio
 import re
 from ..log import *
 from datetime import date
+import weakref
 
 class Tag(BaseModel):
     name: str
     children: list['Tag'] = Field(default_factory=list)
     classes: list[str] = Field(default_factory=list)
+    _next: Optional['weakref.ref[Tag]'] = None
+    _parent: Optional['weakref.ref[Tag]'] = None
     id: Optional[str] = None
     content: list[str] = Field(default_factory=list)
     attrs: dict[str, str | None] = Field(default_factory=dict)
+
+    class Config:
+        arbitrary_types_allowed = True
 
     def get(self, attr: str, default: str = '') -> str:
         return self.attrs.get(attr) or default
@@ -21,6 +27,20 @@ class Tag(BaseModel):
     @property
     def text(self) -> str:
         return ' '.join(self.content)
+
+    def opt_ref(self, t_ref: Optional['weakref.ref[Tag]'], ref_name: str) -> 'Tag':
+        if t_ref is None: raise RuntimeError(f'No {ref_name}')
+        tag = t_ref()
+        if tag is None: raise RuntimeError(f'No {ref_name}')
+        return tag
+
+    @property
+    def parent(self) -> 'Tag':
+        return self.opt_ref(self._parent, 'parent')
+    
+    @property
+    def next(self) -> 'Tag':
+        return self.opt_ref(self._next, 'next')
 
     def filter_children(self, filter: Callable[['Tag'], bool], recursive: bool = True) -> Generator['Tag', None, None]:
         for child in self.children:
@@ -64,7 +84,11 @@ class HtmlParser(html.parser.HTMLParser):
 
     def handle_starttag(self, tag_name: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = Tag(name=tag_name)
-        self._current.children.append(tag)
+        siblings = self._current.children
+        if siblings:
+            siblings[-1]._next = weakref.ref(tag)
+        siblings.append(tag)
+        tag._parent = weakref.ref(self._current)
         if tag_name not in self_closing:
             self._stack.append(tag)
 
@@ -274,17 +298,35 @@ def list_ofertas(root: Tag) -> list[int]:
 
 _oferta_pub_name_re = re.compile(r'^(?P<nome>.*?)( \(Capacidade Original:? (?P<capacidade>\d+)\))?$')
 def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
+    tag_oferta = root.find_by_class('horario_oferta')[0]
     fields = sig_fields(root)
     turma = fields['turma']
     curso = fields['oferta de curso'].split(' - ')[0]
-    prof = fields['docente principal'].split(' (')[0]
-    prof = Professor(nome=prof)
+    prof = fields['docente principal']
+    prof = None if prof == '()' else Professor.from_full(prof)
     situacao = fields['situação']
 
     HorarioLocal = Disciplina.Oferta.HorarioLocal
     horarios: list[HorarioLocal] = []
-    table = root.find_by_name('table')[0]
+    table = tag_oferta.find_by_name('table')[0]
     rows = parse_table(table)[0]
+
+    all_professores: list[list[RefProfessor]] = [[], []]
+
+    alocados = list(tag_oferta.filter_children(lambda tag: tag.name == 'strong' and 'Alocado' in tag.text))[0]
+    visitantes = list(tag_oferta.filter_children(lambda tag: tag.name == 'strong' and 'Visitantes' in tag.text))[0]
+
+    strongs = [alocados, visitantes]
+    for professores, strong in zip(all_professores, strongs):
+        try:
+            ul = strong.parent.next
+        except:
+            continue
+        if ul.name != 'ul': continue
+        for li in ul.find_by_name('li'):
+            nome = li.text
+            aux_prof = Professor.from_full(nome)
+            professores.append(aux_prof)
 
     for dia in range(1, 8):
         inicio: Optional[HorarioLocal.Horario] = None
@@ -331,13 +373,16 @@ def parse_oferta_pub(root: Tag) -> Disciplina.Oferta:
             )
             horarios.append(hl)
 
-    return Disciplina.Oferta(
+    of = Disciplina.Oferta(
         situacao=situacao,
         curso=curso,
         horarios=horarios,
         turma=turma,
-        professor=prof,
+        professor_principal=prof,
+        professores_alocados=all_professores[0],
+        professores_visitantes=all_professores[1],
     )
+    return of
 
 _consulta_oferta_re = re.compile(r'^.*?cod_oferta_disciplina=(?P<extract>.*?)&op=(abrir|fechar)')
 _oferta_parcial_re = re.compile(r'^(?P<disc>\w+) - (?P<nome>.*?) - (?P<turma>\w+)( \(((?P<bimestre>\d)º Bimestre|(?P<semestral>Semestral))\))?\s*$')
@@ -360,6 +405,17 @@ def parse_consulta_oferta(root: Tag) -> tuple[str, list[Disciplina.OfertaParcial
 
     return csrf.get('value'), ofertas
 
+DIAS = [
+    'domingo',
+    'segunda-feira',
+    'terça-feira',
+    'quarta-feira',
+    'quinta-feira',
+    'sexta-feira',
+    'sábado',
+    'não definido'
+]
+
 # TODO: preparar para a abertura de matrícula do SIG
 Oferta = Disciplina.Oferta
 def parse_oferta(root: Tag) -> Oferta:
@@ -369,7 +425,6 @@ def parse_oferta(root: Tag) -> Oferta:
     situacao = info['situação']
     curso = info['oferta de curso']
     turma = info['turma']
-    professor = info['professor']
 
     normal: Optional[Oferta.Vagas] = None
     especial: Optional[Oferta.Vagas] = None
@@ -401,14 +456,28 @@ def parse_oferta(root: Tag) -> Oferta:
 
     horarios = []
     for row in rows:
-        local, abbr, maximo, ocupacao, tipo, dia, inicio, fim = row
+        local, maximo, ocupacao, tipo, dia, hora = row
+        local = local.find_by_name('abbr')[0]
+        abbr = local.text
+        nome = local.get('title')
 
-        inicio = Oferta.HorarioLocal.Horario.from_hora(inicio.text)
-        fim = Oferta.HorarioLocal.Horario.from_hora(fim.text)
-        local = Local(abbr=abbr.text, local=local.text, ocupacao=int(ocupacao.text))
+        hora = hora.text
+        if hora != 'Sem horário definido':
+            ini, fim = hora.split(' - ')
+        else:
+            ini, fim = '', ''
+
+        inicio = Oferta.HorarioLocal.Horario.from_hora(ini)
+        fim = Oferta.HorarioLocal.Horario.from_hora(fim)
+        local = Local(abbr=abbr, local=nome, ocupacao=int(ocupacao.text))
+
+        try:
+            dia = DIAS.index(dia.text.lower())
+        except:
+            dia = -1
 
         h = Oferta.HorarioLocal(
-            dia=int(dia.text),
+            dia=dia,
             inicio=inicio,
             fim=fim,
             local=local
@@ -423,7 +492,9 @@ def parse_oferta(root: Tag) -> Oferta:
         normal=normal,
         especial=especial,
         turma=turma,
-        professor=professor,
+        professor_principal=None,
+        professores_alocados=[],
+        professores_visitantes=[],
     )
 
 def parse_cardapio(root: Tag, data: date) -> Cardapio:

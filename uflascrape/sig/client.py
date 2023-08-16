@@ -30,7 +30,7 @@ class SigModule(BaseModel):
         _sig_modules[self.name] = self
 
 if not _sig_modules:
-    SigModule(name='index', url='/').register()
+    SigModule(name='index', url='/', requires_auth=False).register()
     SigModule(name='login', url='/modulos/login/index.php', requires_auth=False).register()
     SigModule(name='logout', url='/modulos/login/sair.php').register()
     SigModule(name='rematricula', url='/modulos/alunos/rematricula/index.php').register()
@@ -44,7 +44,7 @@ class Sig:
                  *,
                  sig_url: str = SIG_BASE_URL,
                  user_agent: str = USER_AGENT):
-        self._client = Client(base_url=sig_url, headers={'User-Agent': user_agent})
+        self._client = Client(base_url=sig_url, headers={'User-Agent': user_agent}, follow_redirects=True)
         self._logged_in = False
         self._last_csrf = ''
         self._last_disc: str = ''
@@ -70,7 +70,7 @@ class Sig:
         if self._logged_in:
             return True
         self._sig_request('GET', 'index')
-        self._sig_request(
+        r = self._sig_request(
             'POST', 'login',
             data={
                 'login': username,
@@ -79,8 +79,8 @@ class Sig:
                 'entrar': 'Entrar'
             }
         )
-        self._logged_in = True
-        return True
+        self._logged_in = 'Senha inválidos' not in r.text
+        return self._logged_in
 
     def logout(self) -> bool:
         if not self._logged_in:
@@ -180,7 +180,7 @@ class Sig:
                      bimestre: Optional[str] = None) -> list[Disciplina.OfertaParcial]:
         if not self._listed_once:
             self._sig_request('GET', 'rematricula')
-            r = self._sig_request('GET', 'consultar')
+            r = self._sig_request('GET', 'consultar_horario')
             self._listed_once = True
             root = parse_html(r.text)
             csrf, ofertas = parse_consulta_oferta(root)
@@ -189,7 +189,8 @@ class Sig:
         disc = disciplina and _RefDisciplina.r(disciplina).key or ''
 
         r = self._sig_request(
-            'POST', 'consultar',
+            'POST', 'consultar_horario',
+            params={'xml': 1},
             data={
                 'pesquisar_matriz': 1 if matriz else 0,
                 'modulo': modulo,
@@ -209,12 +210,13 @@ class Sig:
         return ofertas
 
     def get_oferta(self, oferta: Disciplina.OfertaParcial) -> Disciplina.Oferta:
+        info(f'Getting oferta {oferta}')
         if self._last_disc != _RefDisciplina.r(oferta.disc).key:
             self.list_ofertas(disciplina=oferta.disc)
 
         params = {'cod_oferta_disciplina': oferta.sig_cod_int}
         r = self._sig_request(
-            'GET', 'consultar',
+            'GET', 'consultar_horario',
             params=_replace(params, op='abrir')
         )
 
@@ -222,7 +224,7 @@ class Sig:
         parsed = parse_oferta(root)
 
         r = self._sig_request(
-            'GET', 'consultar',
+            'GET', 'consultar_horario',
             params=_replace(params, op='fechar')
         )
 
